@@ -6,6 +6,7 @@ import (
 
 	"github.com/prasannakumar414/profile-retrieval-service/http/controller"
 	"github.com/prasannakumar414/profile-retrieval-service/http/helper"
+	"github.com/prasannakumar414/profile-retrieval-service/services"
 )
 
 type Config struct {
@@ -22,9 +23,12 @@ func NewServer(config Config) *Server {
 	}
 
 	healthController := controller.NewHealthController()
+	profileService := services.NewProfileService(nil)
+	profileController := controller.NewProfileController(profileService)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", helper.RequireMethod(http.MethodGet, healthController.Health))
+	mux.HandleFunc("/profiles/retrieve", profileController.Retrieve)
 
 	return &Server{
 		server: &http.Server{
