@@ -1,0 +1,27 @@
+# Binaries and build output
+bin/
+build/
+dist/
+*.exe
+*.out
+*.test
+
+# Go coverage and profiling
+coverage.out
+*.cover
+*.prof
+
+# Dependency and workspace overrides
+vendor/
+go.work
+go.work.sum
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
