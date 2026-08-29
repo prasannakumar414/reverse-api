@@ -3,6 +3,8 @@ node_modules/
 # Local capture output and browser session state
 apis.json
 auth-state.json
+html_apis.json
+html_apis*
 
 # Logs and local environment
 *.log

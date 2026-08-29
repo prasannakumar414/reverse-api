@@ -7,6 +7,7 @@ const readline = require("readline/promises");
 const ENV_FILE = ".env";
 const AUTH_STATE_FILE = "auth-state.json";
 const API_OUTPUT_FILE = "apis.json";
+const HTML_API_OUTPUT_FILE = "html_apis.json";
 
 function loadEnvFile() {
   if (!fs.existsSync(ENV_FILE)) return;
@@ -36,106 +37,165 @@ const MAX_SCROLL_PASSES = 8;
 const SCROLL_DISTANCE_PX = 1200;
 const SCROLL_SETTLE_MS = 2000;
 const FINAL_SETTLE_MS = 5000;
+const MAX_DATA_CHARS = 4000;
+const MAX_REQUEST_BODY_CHARS = 250000;
+const EXCLUDED_CONTENT_TYPES = ["text/css", "text/javascript"];
 
-const apis = new Map();
+const apiEntries = [];
+const htmlApiEntries = [];
 const pendingCaptures = new Set();
 let writeQueue = Promise.resolve();
 
-function isDataApiResponse(response) {
-  const url = response.url();
-  const headers = response.headers();
-  const contentType = (headers["content-type"] || "").toLowerCase();
+function truncateData(data) {
+  if (data == null) return null;
 
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
+  const text = typeof data === "string" ? data : JSON.stringify(data);
+  if (text.length <= MAX_DATA_CHARS) return text;
 
-  const pathname = parsed.pathname.toLowerCase();
-  const isJsonResponse = contentType.includes("json");
-  const isGraphqlRoute = pathname.includes("/graphql");
-
-  return isJsonResponse || isGraphqlRoute;
+  return `${text.slice(0, MAX_DATA_CHARS)}... [truncated]`;
 }
 
-async function readResponseData(response) {
+function truncateRequestBody(data) {
+  if (data == null) {
+    return {
+      requestPostData: null,
+      requestPostDataTruncated: false,
+      requestPostDataLength: 0,
+    };
+  }
+
+  if (data.length <= MAX_REQUEST_BODY_CHARS) {
+    return {
+      requestPostData: data,
+      requestPostDataTruncated: false,
+      requestPostDataLength: data.length,
+    };
+  }
+
+  return {
+    requestPostData: `${data.slice(0, MAX_REQUEST_BODY_CHARS)}... [truncated]`,
+    requestPostDataTruncated: true,
+    requestPostDataLength: data.length,
+  };
+}
+
+function shouldCaptureRequestBody(request) {
+  return (
+    request.method() === "POST" &&
+    request.url().includes("/flagship-web/rsc-action/")
+  );
+}
+
+function buildRequestCapture(request) {
+  if (!shouldCaptureRequestBody(request)) return {};
+
+  const headers = request.headers();
+  return {
+    requestContentType: headers["content-type"] || null,
+    ...truncateRequestBody(request.postData()),
+  };
+}
+
+function isExcludedContentType(response) {
+  const contentType = (response.headers()["content-type"] || "").toLowerCase();
+
+  return EXCLUDED_CONTENT_TYPES.some((excludedType) =>
+    contentType.startsWith(excludedType)
+  );
+}
+
+function isHtmlContentType(response) {
+  const contentType = (response.headers()["content-type"] || "").toLowerCase();
+
+  return contentType.includes("text/html");
+}
+
+async function readTruncatedResponseData(response) {
   const contentType = (response.headers()["content-type"] || "").toLowerCase();
 
   if (contentType.includes("json")) {
-    return response.json();
+    return truncateData(await response.json());
   }
 
-  const text = await response.text();
-  if (!text.trim()) return null;
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
+  if (
+    contentType.startsWith("text/") ||
+    contentType.includes("javascript") ||
+    contentType.includes("xml") ||
+    contentType.includes("html") ||
+    contentType.includes("form-urlencoded")
+  ) {
+    return truncateData(await response.text());
   }
+
+  const body = await response.body();
+  if (!body.length) return null;
+
+  return truncateData(body.toString("base64"));
 }
 
-function upsertApi(response, data) {
+async function readHtmlResponseData(response) {
+  return response.text();
+}
+
+function buildEntry(response, data, dataField = "truncatedData") {
   const request = response.request();
   const headers = response.headers();
-  const url = response.url();
   const now = new Date().toISOString();
-  const key = `${request.method()} ${url}`;
-  const existing = apis.get(key);
 
-  if (existing) {
-    existing.count += 1;
-    existing.lastSeenAt = now;
-    existing.statuses = Array.from(new Set([...existing.statuses, response.status()]));
-    existing.responses.push({
-      capturedAt: now,
-      status: response.status(),
-      data,
-    });
-    return existing;
-  }
-
-  const api = {
+  return {
+    api: response.url(),
+    type: request.resourceType(),
+    statusCode: response.status(),
+    [dataField]: data,
     method: request.method(),
-    url,
-    resourceType: request.resourceType(),
-    status: response.status(),
-    statuses: [response.status()],
     contentType: headers["content-type"] || null,
-    firstSeenAt: now,
-    lastSeenAt: now,
-    count: 1,
-    responses: [
-      {
-        capturedAt: now,
-        status: response.status(),
-        data,
-      },
-    ],
+    ...buildRequestCapture(request),
+    capturedAt: now,
   };
-
-  apis.set(key, api);
-  return api;
 }
 
-function writeApisFile() {
+function recordApi(response, truncatedData) {
+  const entry = buildEntry(response, truncatedData);
+  apiEntries.push(entry);
+  return entry;
+}
+
+function recordHtmlApi(response, truncatedData) {
+  const entry = buildEntry(response, truncatedData, "data");
+  htmlApiEntries.push(entry);
+  return entry;
+}
+
+function writeEntriesFile(outputFile, entries) {
   const payload = {
     generatedAt: new Date().toISOString(),
     targetUrl: TARGET_URL,
-    count: apis.size,
-    apis: Array.from(apis.values()).sort((a, b) => a.url.localeCompare(b.url)),
+    count: entries.length,
+    apis: entries,
   };
+  const outputPath = path.resolve(outputFile);
+  const tempPath = `${outputPath}.tmp`;
 
   writeQueue = writeQueue.then(() =>
-    fsp.writeFile(
-      path.resolve(API_OUTPUT_FILE),
-      JSON.stringify(payload, null, 2) + "\n",
-      "utf8"
-    )
+    fsp
+      .writeFile(tempPath, JSON.stringify(payload, null, 2) + "\n", "utf8")
+      .then(() => fsp.rename(tempPath, outputPath))
   );
 
+  return writeQueue;
+}
+
+function writeApisFile() {
+  return writeEntriesFile(API_OUTPUT_FILE, apiEntries);
+}
+
+function writeHtmlApisFile() {
+  return writeEntriesFile(HTML_API_OUTPUT_FILE, htmlApiEntries);
+}
+
+function writeOutputFiles() {
+  writeApisFile();
+  writeHtmlApisFile();
   return writeQueue;
 }
 
@@ -173,7 +233,7 @@ async function scrollForLazyLoadedData(page) {
       scrollState.scrollY + scrollState.innerHeight >= scrollState.scrollHeight - 20;
 
     console.log(
-      `Scroll pass ${pass}/${MAX_SCROLL_PASSES}: ${apis.size} data APIs captured`
+      `Scroll pass ${pass}/${MAX_SCROLL_PASSES}: ${apiEntries.length} responses, ${htmlApiEntries.length} HTML responses captured`
     );
 
     if (reachedBottom) break;
@@ -199,16 +259,27 @@ async function scrollForLazyLoadedData(page) {
   const page = await context.newPage();
 
   page.on("response", async (response) => {
-    if (!isDataApiResponse(response)) return;
+    if (isExcludedContentType(response)) return;
 
     const capture = (async () => {
       try {
-        const data = await readResponseData(response);
-        const api = upsertApi(response, data);
-        console.log(`DATA API ${api.method} ${api.status}: ${api.url}`);
-        await writeApisFile();
+        const isHtml = isHtmlContentType(response);
+        const data = isHtml
+          ? await readHtmlResponseData(response)
+          : await readTruncatedResponseData(response);
+        const entry = isHtml
+          ? recordHtmlApi(response, data)
+          : recordApi(response, data);
+        const label = isHtml ? "HTML" : "RESPONSE";
+        console.log(
+          `${label} ${entry.method} ${entry.statusCode} ${entry.type}: ${entry.api}`
+        );
+        await writeOutputFiles();
       } catch (err) {
-        console.warn(`Skipped data API response: ${response.url()}`);
+        const isHtml = isHtmlContentType(response);
+        const entry = isHtml ? recordHtmlApi(response, null) : recordApi(response, null);
+        console.warn(`Captured response without body data: ${entry.api}`);
+        await writeOutputFiles();
       }
     })();
 
@@ -225,7 +296,7 @@ async function scrollForLazyLoadedData(page) {
   await waitForQuietNetwork(page, FINAL_SETTLE_MS);
   await waitForUserToFinish();
   await Promise.allSettled(Array.from(pendingCaptures));
-  await writeApisFile();
+  await writeOutputFiles();
   await writeQueue;
   await browser.close();
 })().catch((err) => {
