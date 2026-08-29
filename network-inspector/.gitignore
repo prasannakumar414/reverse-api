@@ -1,0 +1,16 @@
+node_modules/
+
+# Local capture output and browser session state
+apis.json
+auth-state.json
+
+# Logs and local environment
+*.log
+.env
+.env.local
+.env.*.local
+
+# OS/editor noise
+.DS_Store
+.vscode/
+.idea/
