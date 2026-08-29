@@ -20,11 +20,19 @@ var (
 	ErrFetchFailed       = errors.New("failed to fetch profile from linkedin apis")
 )
 
+const DefaultLinkedInRequestMinInterval = 3 * time.Second
+
 type ProfileService struct {
 	client       *http.Client
 	cookieHeader string
 	csrfToken    string
 	dataParser   *ProfileDataParser
+	requestPacer *RequestPacer
+}
+
+type ProfileServiceConfig struct {
+	Client             *http.Client
+	RequestMinInterval time.Duration
 }
 
 type ProfileResult struct {
@@ -119,18 +127,26 @@ type rscResponse struct {
 }
 
 func NewProfileService(client *http.Client) *ProfileService {
-	if client == nil {
-		client = &http.Client{
+	return NewProfileServiceWithConfig(ProfileServiceConfig{
+		Client:             client,
+		RequestMinInterval: DefaultLinkedInRequestMinInterval,
+	})
+}
+
+func NewProfileServiceWithConfig(config ProfileServiceConfig) *ProfileService {
+	if config.Client == nil {
+		config.Client = &http.Client{
 			Timeout: 20 * time.Second,
 		}
 	}
 
 	cookieHeader := loadLinkedInCookieHeader()
 	return &ProfileService{
-		client:       client,
+		client:       config.Client,
 		cookieHeader: cookieHeader,
 		csrfToken:    loadLinkedInCSRFToken(cookieHeader),
 		dataParser:   NewProfileDataParser(),
+		requestPacer: NewRequestPacer(config.RequestMinInterval),
 	}
 }
 
@@ -323,6 +339,10 @@ func (s *ProfileService) fetchRSCs(ctx context.Context, sourceURLs map[string]st
 }
 
 func (s *ProfileService) fetchAPI(ctx context.Context, apiURL string) (any, error) {
+	if err := s.requestPacer.Wait(ctx); err != nil {
+		return nil, err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
@@ -363,6 +383,10 @@ func (s *ProfileService) fetchAPI(ctx context.Context, apiURL string) (any, erro
 }
 
 func (s *ProfileService) fetchHTML(ctx context.Context, key, sourceURL string) (string, error) {
+	if err := s.requestPacer.Wait(ctx); err != nil {
+		return "", err
+	}
+
 	method := http.MethodGet
 	if key == "flagship_certifications" {
 		method = http.MethodPost
@@ -401,6 +425,10 @@ func (s *ProfileService) fetchHTML(ctx context.Context, key, sourceURL string) (
 }
 
 func (s *ProfileService) fetchRSC(ctx context.Context, key, sourceURL, publicID, memberID string) (string, error) {
+	if err := s.requestPacer.Wait(ctx); err != nil {
+		return "", err
+	}
+
 	requestBody, referer := rscRequest(key, publicID, memberID)
 	body := strings.NewReader(requestBody)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, sourceURL, body)

@@ -10,7 +10,10 @@ import (
 )
 
 type Config struct {
-	Addr string
+	Addr                       string
+	ProfileRateLimitRequests   int
+	ProfileRateLimitWindow     time.Duration
+	LinkedInRequestMinInterval time.Duration
 }
 
 type Server struct {
@@ -21,14 +24,32 @@ func NewServer(config Config) *Server {
 	if config.Addr == "" {
 		config.Addr = ":8080"
 	}
+	if config.ProfileRateLimitRequests == 0 {
+		config.ProfileRateLimitRequests = 1
+	}
+	if config.ProfileRateLimitWindow == 0 {
+		config.ProfileRateLimitWindow = 2 * time.Minute
+	}
+	if config.LinkedInRequestMinInterval == 0 {
+		config.LinkedInRequestMinInterval = services.DefaultLinkedInRequestMinInterval
+	}
 
 	healthController := controller.NewHealthController()
-	profileService := services.NewProfileService(nil)
+	profileService := services.NewProfileServiceWithConfig(services.ProfileServiceConfig{
+		RequestMinInterval: config.LinkedInRequestMinInterval,
+	})
 	profileController := controller.NewProfileController(profileService)
+	profileRetrieveHandler := profileController.Retrieve
+	if config.ProfileRateLimitRequests > 0 && config.ProfileRateLimitWindow > 0 {
+		profileRetrieveHandler = helper.NewRateLimiter(helper.RateLimitConfig{
+			Requests: config.ProfileRateLimitRequests,
+			Window:   config.ProfileRateLimitWindow,
+		}).Wrap(profileRetrieveHandler)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", helper.RequireMethod(http.MethodGet, healthController.Health))
-	mux.HandleFunc("/profiles/retrieve", profileController.Retrieve)
+	mux.HandleFunc("/profiles/retrieve", profileRetrieveHandler)
 
 	return &Server{
 		server: &http.Server{
