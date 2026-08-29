@@ -35,6 +35,7 @@ func NewServer(config Config) *Server {
 	}
 
 	healthController := controller.NewHealthController()
+	docsController := controller.NewDocsController()
 	profileService := services.NewProfileServiceWithConfig(services.ProfileServiceConfig{
 		RequestMinInterval: config.LinkedInRequestMinInterval,
 	})
@@ -49,6 +50,9 @@ func NewServer(config Config) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", helper.RequireMethod(http.MethodGet, healthController.Health))
+	mux.HandleFunc("/docs", helper.RequireMethod(http.MethodGet, docsController.Docs))
+	mux.HandleFunc("/docs/", helper.RequireMethod(http.MethodGet, docsController.Docs))
+	mux.HandleFunc("/docs/openapi.yaml", helper.RequireMethod(http.MethodGet, docsController.OpenAPI))
 	mux.HandleFunc("/profiles/retrieve", profileRetrieveHandler)
 
 	return &Server{

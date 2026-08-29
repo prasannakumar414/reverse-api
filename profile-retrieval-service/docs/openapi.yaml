@@ -1,0 +1,283 @@
+openapi: 3.0.3
+info:
+  title: Profile Retrieval Service API
+  version: 0.1.0
+  description: API for health checks and LinkedIn profile retrieval.
+servers:
+  - url: /
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /profiles/retrieve:
+    get:
+      summary: Retrieve a LinkedIn profile
+      operationId: retrieveProfileByQuery
+      parameters:
+        - name: profile_url
+          in: query
+          required: true
+          description: LinkedIn /in/ profile URL.
+          schema:
+            type: string
+            format: uri
+            example: https://www.linkedin.com/in/example-profile/
+      responses:
+        "200":
+          description: Retrieved profile data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileResult"
+        "400":
+          description: Missing or invalid profile URL.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Profile retrieval rate limit exceeded.
+          headers:
+            Retry-After:
+              description: Seconds until another request should be attempted.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Failed to fetch profile data from upstream LinkedIn APIs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      summary: Retrieve a LinkedIn profile
+      operationId: retrieveProfileByBody
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                profile_url:
+                  type: string
+                  format: uri
+                  example: https://www.linkedin.com/in/example-profile/
+                url:
+                  type: string
+                  format: uri
+                  example: https://www.linkedin.com/in/example-profile/
+              oneOf:
+                - required:
+                    - profile_url
+                - required:
+                    - url
+      responses:
+        "200":
+          description: Retrieved profile data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileResult"
+        "400":
+          description: Missing profile URL or invalid JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Profile retrieval rate limit exceeded.
+          headers:
+            Retry-After:
+              description: Seconds until another request should be attempted.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Failed to fetch profile data from upstream LinkedIn APIs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+    ProfileResult:
+      type: object
+      required:
+        - profile_url
+        - public_id
+        - source_urls
+      properties:
+        profile_url:
+          type: string
+          format: uri
+        public_id:
+          type: string
+        profile_urn:
+          type: string
+        member_id:
+          type: string
+        version_tag:
+          type: string
+        name:
+          type: string
+        headline:
+          type: string
+        location:
+          type: string
+        about:
+          type: string
+        experience:
+          type: array
+          items:
+            $ref: "#/components/schemas/Experience"
+        education:
+          type: array
+          items:
+            $ref: "#/components/schemas/Education"
+        skills:
+          type: array
+          items:
+            $ref: "#/components/schemas/Skill"
+        certifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/Certification"
+        languages:
+          type: array
+          items:
+            $ref: "#/components/schemas/Language"
+        images:
+          $ref: "#/components/schemas/ProfileImages"
+        source_urls:
+          type: object
+          additionalProperties:
+            type: string
+            format: uri
+        api_errors:
+          type: array
+          items:
+            type: string
+        missing:
+          type: array
+          items:
+            type: string
+    Experience:
+      type: object
+      properties:
+        title:
+          type: string
+        company:
+          type: string
+        employment_type:
+          type: string
+        date_range:
+          type: string
+        location:
+          type: string
+        description:
+          type: string
+        skills:
+          type: array
+          items:
+            type: string
+    Education:
+      type: object
+      properties:
+        school:
+          type: string
+        degree:
+          type: string
+        field_of_study:
+          type: string
+        date_range:
+          type: string
+        skills:
+          type: array
+          items:
+            type: string
+    Skill:
+      type: object
+      properties:
+        name:
+          type: string
+    Certification:
+      type: object
+      properties:
+        name:
+          type: string
+        issuer:
+          type: string
+        issued:
+          type: string
+        expires:
+          type: string
+        credential_id:
+          type: string
+        url:
+          type: string
+          format: uri
+        skills:
+          type: array
+          items:
+            type: string
+    Language:
+      type: object
+      properties:
+        name:
+          type: string
+        proficiency:
+          type: string
+    ProfileImages:
+      type: object
+      properties:
+        profile:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageArtifact"
+        background:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageArtifact"
+    ImageArtifact:
+      type: object
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          format: uri
+        width:
+          type: integer
+        height:
+          type: integer
+        expires_at:
+          type: integer
+          format: int64
