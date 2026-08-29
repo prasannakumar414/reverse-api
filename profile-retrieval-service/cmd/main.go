@@ -35,6 +35,10 @@ func loadDotEnv(filename string) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+	if err := scanner.Err(); err != nil {
+		log.Printf("error reading .env file: %v", err)
+		return
+	}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
