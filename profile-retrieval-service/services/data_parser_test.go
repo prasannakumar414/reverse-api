@@ -210,6 +210,66 @@ func TestProfileDataParserMergeExperienceWithoutEmploymentType(t *testing.T) {
 	}
 }
 
+func TestProfileDataParserMergeMultipleRolesAtSameCompany(t *testing.T) {
+	document := `
+		<html><body>
+			<section>
+				<h2>Experience</h2>
+				<div>Quality Assurance Automation Engineer</div>
+				<div>Infor · Full-time</div>
+				<div>Feb 2024 - Present · 2 yrs 7 mos</div>
+				<div>Hyderabad, Telangana, India · Hybrid</div>
+				<div>QA Automation, Playwright and +3 skills</div>
+				<div>Ivy</div>
+				<div>Full-time · 1 yr 6 mos</div>
+				<div>Test Engineer</div>
+				<div>Aug 2023 - Jan 2024 · 6 mos</div>
+				<div>Hybrid</div>
+				<div>Skills:</div>
+				<div>QA Automation, Quality Control, +16 skills</div>
+				<div>Trainee Test Engineer</div>
+				<div>Aug 2022 - Aug 2023 · 1 yr 1 mo</div>
+				<div>Hyderabad, Telangana, India</div>
+				<div>Skills:</div>
+				<div>User Experience (UX), Quality Assurance Testing, +4 skills</div>
+				<div>Ad Options</div>
+			</section>
+		</body></html>`
+
+	result := &ProfileResult{}
+	NewProfileDataParser().Merge(result, document, "pavan-sai-potnuru-8aa709172")
+
+	expected := []Experience{
+		{
+			Title:          "Quality Assurance Automation Engineer",
+			Company:        "Infor",
+			EmploymentType: "Full-time",
+			DateRange:      "Feb 2024 - Present · 2 yrs 7 mos",
+			Location:       "Hyderabad, Telangana, India · Hybrid",
+			Skills:         []string{"QA Automation", "Playwright"},
+		},
+		{
+			Title:          "Test Engineer",
+			Company:        "Ivy",
+			EmploymentType: "Full-time",
+			DateRange:      "Aug 2023 - Jan 2024 · 6 mos",
+			Location:       "Hybrid",
+			Skills:         []string{"QA Automation", "Quality Control"},
+		},
+		{
+			Title:          "Trainee Test Engineer",
+			Company:        "Ivy",
+			EmploymentType: "Full-time",
+			DateRange:      "Aug 2022 - Aug 2023 · 1 yr 1 mo",
+			Location:       "Hyderabad, Telangana, India",
+			Skills:         []string{"User Experience (UX)", "Quality Assurance Testing"},
+		},
+	}
+	if !reflect.DeepEqual(result.Experience, expected) {
+		t.Fatalf("experience = %#v, want %#v", result.Experience, expected)
+	}
+}
+
 func TestProfileDataParserMergeEducationAndSkills(t *testing.T) {
 	document := `
 		<html><body>

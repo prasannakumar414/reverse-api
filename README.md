@@ -75,7 +75,7 @@ Useful environment variables:
 PORT=8080
 PROFILE_RETRIEVE_RATE_LIMIT_REQUESTS=1
 PROFILE_RETRIEVE_RATE_LIMIT_WINDOW=2m
-LINKEDIN_REQUEST_MIN_INTERVAL=3s
+LINKEDIN_REQUEST_MIN_INTERVAL=500ms
 LINKEDIN_COOKIE_HEADER=
 LINKEDIN_CSRF_TOKEN=
 LINKEDIN_LI_AT=
@@ -83,6 +83,8 @@ LINKEDIN_JSESSIONID=
 ```
 
 LinkedIn profile retrieval depends on valid LinkedIn session credentials. Prefer `LINKEDIN_COOKIE_HEADER` and `LINKEDIN_CSRF_TOKEN` copied from an authenticated browser request. As an alternative, set `LINKEDIN_LI_AT` and `LINKEDIN_JSESSIONID`.
+
+Retrieval always fetches the main profile and all detail HTML pages. RSC requests are made only for sections that are still missing after those pages are parsed.
 
 ### Network Inspector
 

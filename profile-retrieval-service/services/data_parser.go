@@ -116,27 +116,82 @@ func (p *ProfileDataParser) mergeExperience(result *ProfileResult, lines []strin
 }
 
 func experienceItemsFromLines(lines []string) []Experience {
-	var starts []int
-	for i := 0; i+2 < len(lines); i++ {
-		if looksLikeExperienceIdentity(lines[i]) &&
-			looksLikeExperienceIdentity(lines[i+1]) &&
-			looksLikeDateRange(lines[i+2]) {
-			starts = append(starts, i)
+	var items []Experience
+	for i := 0; i < len(lines); {
+		switch {
+		case isGroupedExperienceHeader(lines, i):
+			end := nextExperienceGroupBoundary(lines, i+2)
+			items = append(items, groupedExperienceItemsFromLines(lines[i:end])...)
+			i = end
+		case isStandaloneExperienceHeader(lines, i):
+			end := nextExperienceGroupBoundary(lines, i+1)
+			if item, ok := experienceItemFromLines(lines[i:end]); ok {
+				items = append(items, item)
+			}
+			i = end
+		default:
+			i++
 		}
 	}
-	if len(starts) == 0 {
+	return items
+}
+
+func nextExperienceGroupBoundary(lines []string, start int) int {
+	for i := start; i < len(lines); i++ {
+		if isGroupedExperienceHeader(lines, i) || isStandaloneExperienceHeader(lines, i) {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+func isStandaloneExperienceHeader(lines []string, start int) bool {
+	return start >= 0 && start+2 < len(lines) &&
+		looksLikeExperienceIdentity(lines[start]) &&
+		looksLikeExperienceIdentity(lines[start+1]) &&
+		looksLikeDateRange(lines[start+2])
+}
+
+func isGroupedExperienceHeader(lines []string, start int) bool {
+	return start >= 0 && start+3 < len(lines) &&
+		looksLikeExperienceIdentity(lines[start]) &&
+		looksLikeEmploymentSummary(lines[start+1]) &&
+		looksLikeExperienceIdentity(lines[start+2]) &&
+		looksLikeDateRange(lines[start+3])
+}
+
+func groupedExperienceItemsFromLines(lines []string) []Experience {
+	if !isGroupedExperienceHeader(lines, 0) {
 		return nil
 	}
 
+	company := strings.TrimSpace(lines[0])
+	employmentParts := splitClean(lines[1], "·")
+	employmentType := employmentParts[0]
+	roleLines := lines[2:]
 	var items []Experience
-	for i, start := range starts {
-		end := len(lines)
-		if i+1 < len(starts) {
-			end = starts[i+1]
+	for i := 0; i+1 < len(roleLines); {
+		if !looksLikeExperienceIdentity(roleLines[i]) || !looksLikeDateRange(roleLines[i+1]) {
+			i++
+			continue
 		}
-		if item, ok := experienceItemFromLines(lines[start:end]); ok {
-			items = append(items, item)
+
+		end := len(roleLines)
+		for j := i + 2; j+1 < len(roleLines); j++ {
+			if looksLikeExperienceIdentity(roleLines[j]) && looksLikeDateRange(roleLines[j+1]) {
+				end = j
+				break
+			}
 		}
+		item := Experience{
+			Title:          strings.TrimSpace(roleLines[i]),
+			Company:        company,
+			EmploymentType: employmentType,
+			DateRange:      strings.TrimSpace(roleLines[i+1]),
+		}
+		mergeExperienceDetails(&item, roleLines[i+2:end])
+		items = append(items, item)
+		i = end
 	}
 	return items
 }
@@ -156,25 +211,32 @@ func experienceItemFromLines(lines []string) (Experience, bool) {
 		item.EmploymentType = companyParts[1]
 	}
 
+	mergeExperienceDetails(&item, lines[3:])
+	return item, item.Title != "" || item.Company != ""
+}
+
+func mergeExperienceDetails(item *Experience, lines []string) {
 	var descriptions []string
-	for _, line := range lines[3:] {
+	for _, line := range lines {
+		lower := strings.ToLower(strings.TrimSpace(line))
 		switch {
 		case item.Location == "" && looksLikeLocation(line):
 			item.Location = line
-		case strings.Contains(strings.ToLower(line), " skills"):
+		case lower == "skills:":
+			continue
+		case strings.Contains(lower, " skills"):
 			item.Skills = skillsFromSummaryLine(line)
 		default:
 			descriptions = append(descriptions, line)
 		}
 	}
 	item.Description = strings.Join(descriptions, "\n")
-	return item, item.Title != "" || item.Company != ""
 }
 
 func looksLikeExperienceIdentity(line string) bool {
 	line = strings.TrimSpace(line)
 	lower := strings.ToLower(line)
-	if line == "" || looksLikeDateRange(line) || looksLikeLocation(line) || isChromeLine(line) || looksLikeRecommendationLine(line) {
+	if line == "" || looksLikeDateRange(line) || looksLikeLocation(line) || looksLikeEmploymentSummary(line) || isChromeLine(line) || looksLikeRecommendationLine(line) {
 		return false
 	}
 	if strings.Contains(lower, " skills") {
@@ -185,6 +247,19 @@ func looksLikeExperienceIdentity(line string) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+func looksLikeEmploymentSummary(line string) bool {
+	parts := splitClean(line, "·")
+	if len(parts) < 2 {
+		return false
+	}
+	switch strings.ToLower(parts[0]) {
+	case "full-time", "part-time", "self-employed", "freelance", "contract", "internship", "apprenticeship", "seasonal", "temporary":
+		return true
+	default:
+		return false
 	}
 }
 
