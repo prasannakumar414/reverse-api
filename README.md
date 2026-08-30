@@ -10,10 +10,10 @@
 
 - `network-inspector`: a Playwright script that opens a target page in Chromium and captures response payloads.
 - `profile-retrieval-service`: a Go HTTP service that retrieves LinkedIn profile data from LinkedIn web/API sources.
-- I have used network inspector to capture LinkedIn web and API traffic and write to a file locally, I have used the captured data to understand the structure and behavior of LinkedIn's web and API endpoints. Then I have used this understanding to implement the profile-retrieval-service for programmatically retrieving profile data.
+- I have used network inspector to capture LinkedIn web and API traffic and write to a file locally, I have used the captured data to understand the structure and behavior of LinkedIn's web, rsc (react server component) API endpoints. Then I have used this understanding to implement the profile-retrieval-service for programmatically retrieving profile data.
 
 ## Detours/Notes
-- Intially I have tried to use graphQL and data apis for profile retrieval, but accept for certifications all the other data returned 410 Gone status code. Therefore, I had to rely on understanding the web endpoints and implementing the profile-retrieval-service accordingly.
+- Intially I have tried to use graphQL and data apis for profile retrieval, but accept for certifications all the other data returned 410 Gone status code. Therefore, I had to rely on understanding the web endpoints and implementing the profile-retrieval-service accordingly using rsc.
 
 ## Prerequisites
 
