@@ -14,10 +14,7 @@ import (
 func main() {
 	loadDotEnv(".env")
 
-	addr := os.Getenv("HTTP_ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
+	addr := listenAddrFromEnv()
 
 	server := httpserver.NewServer(httpserver.Config{
 		Addr:                       addr,
@@ -30,6 +27,17 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func listenAddrFromEnv() string {
+	if port := strings.TrimSpace(os.Getenv("PORT")); port != "" {
+		if strings.HasPrefix(port, ":") {
+			return port
+		}
+		return ":" + port
+	}
+
+	return ":8080"
 }
 
 func intEnv(key string, fallback int) int {
