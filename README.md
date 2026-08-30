@@ -15,6 +15,8 @@
 ## Detours/Notes
 - Intially I have tried to use graphQL and data apis for profile retrieval, but accept for certifications all the other data returned 410 Gone status code. Therefore, I had to rely on understanding the web endpoints and implementing the profile-retrieval-service accordingly using rsc.
 
+<img src="/profile-retrieval-service/docs/architecture.png" alt="architecture">
+
 ## Prerequisites
 
 - Go `1.26.4` or newer for `profile-retrieval-service`
