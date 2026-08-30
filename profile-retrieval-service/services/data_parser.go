@@ -33,6 +33,35 @@ func (p *ProfileDataParser) Merge(result *ProfileResult, document string, public
 	if isRSC {
 		p.mergeRSCSkills(result, document)
 	}
+	p.mergeCertifications(result, lines, isRSC)
+	p.mergeLanguages(result, lines, isRSC)
+}
+
+func (p *ProfileDataParser) MergeRSC(result *ProfileResult, key, document, publicID string) {
+	if result == nil || document == "" {
+		return
+	}
+
+	lines := rscTextLines(document)
+	switch {
+	case key == "flagship_about_rsc":
+		if about := aboutFromRSC(document); about != "" {
+			result.About = about
+		}
+	case strings.HasPrefix(key, "flagship_experience_rsc_"):
+		p.mergeExperience(result, lines)
+	case strings.HasPrefix(key, "flagship_education_rsc_"):
+		p.mergeEducation(result, lines, true)
+	case strings.HasPrefix(key, "flagship_skills_rsc_"):
+		p.mergeSkills(result, lines)
+		p.mergeRSCSkills(result, document)
+	case strings.HasPrefix(key, "flagship_certifications_rsc_"):
+		p.mergeCertifications(result, lines, true)
+	case strings.HasPrefix(key, "flagship_languages_rsc_"):
+		p.mergeLanguages(result, lines, true)
+	default:
+		p.Merge(result, document, publicID)
+	}
 }
 
 func (p *ProfileDataParser) mergeProfile(result *ProfileResult, document string, lines []string, publicID string) {
@@ -79,23 +108,57 @@ func (p *ProfileDataParser) mergeExperience(result *ProfileResult, lines []strin
 		return
 	}
 
-	end := nextIndexAny(lines, start+1, "Ad Options", "More profiles for you", "People also viewed", "About")
+	end := nextIndexAny(lines, start+1, "Ad Options", "More profiles for you", "People also viewed", "About", "Education")
 	section := sliceUntil(lines, start+1, end)
-	item := Experience{}
+	for _, item := range experienceItemsFromLines(section) {
+		result.Experience = append(result.Experience, item)
+	}
+}
+
+func experienceItemsFromLines(lines []string) []Experience {
+	var starts []int
+	for i := 0; i+2 < len(lines); i++ {
+		if looksLikeExperienceIdentity(lines[i]) &&
+			looksLikeExperienceIdentity(lines[i+1]) &&
+			looksLikeDateRange(lines[i+2]) {
+			starts = append(starts, i)
+		}
+	}
+	if len(starts) == 0 {
+		return nil
+	}
+
+	var items []Experience
+	for i, start := range starts {
+		end := len(lines)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		}
+		if item, ok := experienceItemFromLines(lines[start:end]); ok {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func experienceItemFromLines(lines []string) (Experience, bool) {
+	if len(lines) < 3 || !looksLikeDateRange(lines[2]) {
+		return Experience{}, false
+	}
+
+	companyParts := splitClean(lines[1], "·")
+	item := Experience{
+		Title:     strings.TrimSpace(lines[0]),
+		Company:   companyParts[0],
+		DateRange: strings.TrimSpace(lines[2]),
+	}
+	if len(companyParts) > 1 {
+		item.EmploymentType = companyParts[1]
+	}
+
 	var descriptions []string
-	for i := 0; i < len(section); i++ {
-		line := section[i]
+	for _, line := range lines[3:] {
 		switch {
-		case item.Title == "":
-			item.Title = line
-		case item.Company == "" && strings.Contains(line, "·"):
-			parts := splitClean(line, "·")
-			item.Company = parts[0]
-			if len(parts) > 1 {
-				item.EmploymentType = parts[1]
-			}
-		case item.DateRange == "" && looksLikeDateRange(line):
-			item.DateRange = line
 		case item.Location == "" && looksLikeLocation(line):
 			item.Location = line
 		case strings.Contains(strings.ToLower(line), " skills"):
@@ -105,8 +168,23 @@ func (p *ProfileDataParser) mergeExperience(result *ProfileResult, lines []strin
 		}
 	}
 	item.Description = strings.Join(descriptions, "\n")
-	if item.Title != "" || item.Company != "" {
-		result.Experience = append(result.Experience, item)
+	return item, item.Title != "" || item.Company != ""
+}
+
+func looksLikeExperienceIdentity(line string) bool {
+	line = strings.TrimSpace(line)
+	lower := strings.ToLower(line)
+	if line == "" || looksLikeDateRange(line) || looksLikeLocation(line) || isChromeLine(line) || looksLikeRecommendationLine(line) {
+		return false
+	}
+	if strings.Contains(lower, " skills") {
+		return false
+	}
+	switch lower {
+	case "experience", "education", "skills", "licenses & certifications", "languages":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -121,6 +199,9 @@ func (p *ProfileDataParser) mergeEducation(result *ProfileResult, lines []string
 	section := sliceUntil(lines, start+1, end)
 	if start < 0 {
 		section = lines
+		if !containsEducationDegree(section) {
+			return
+		}
 	}
 	if len(section) == 0 {
 		return
@@ -147,6 +228,15 @@ func (p *ProfileDataParser) mergeEducation(result *ProfileResult, lines []string
 	if item.School != "" || item.Degree != "" {
 		result.Education = append(result.Education, item)
 	}
+}
+
+func containsEducationDegree(lines []string) bool {
+	for _, line := range lines {
+		if looksLikeEducationDegree(line) {
+			return true
+		}
+	}
+	return false
 }
 
 func educationItemsFromLines(lines []string) []Education {
@@ -221,6 +311,124 @@ func (p *ProfileDataParser) mergeRSCSkills(result *ProfileResult, document strin
 	}
 }
 
+func (p *ProfileDataParser) mergeCertifications(result *ProfileResult, lines []string, allowUnsectioned bool) {
+	start := indexLine(lines, "Licenses & certifications")
+	if start < 0 {
+		start = indexLine(lines, "Certifications")
+	}
+	if start < 0 && !allowUnsectioned {
+		return
+	}
+
+	section := lines
+	if start >= 0 {
+		end := nextIndexAny(lines, start+1, "Skills", "Languages", "Ad Options", "More profiles for you", "People also viewed", "About")
+		section = sliceUntil(lines, start+1, end)
+	}
+
+	for i, line := range section {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "issued ") || i < 1 {
+			continue
+		}
+
+		name, issuer := certificationIdentity(section, i)
+		if name == "" || strings.HasPrefix(name, "$") || strings.HasPrefix(issuer, "$") || isChromeLine(name) || isChromeLine(issuer) {
+			continue
+		}
+
+		issued, expires := certificationDates(line)
+		item := Certification{Name: name, Issuer: issuer, Issued: issued, Expires: expires}
+		for j := i + 1; j < len(section); j++ {
+			next := strings.TrimSpace(section[j])
+			lower := strings.ToLower(next)
+			if strings.HasPrefix(lower, "issued ") {
+				break
+			}
+			switch {
+			case strings.HasPrefix(lower, "credential id "):
+				item.CredentialID = strings.TrimSpace(next[len("Credential ID "):])
+			case strings.HasPrefix(lower, "skills:") || strings.Contains(lower, " skills"):
+				item.Skills = skillsFromSummaryLine(next)
+			}
+		}
+		result.Certifications = append(result.Certifications, item)
+	}
+}
+
+func certificationIdentity(lines []string, issuedIndex int) (string, string) {
+	var candidates []string
+	for i := issuedIndex - 1; i >= 0 && len(candidates) < 2; i-- {
+		line := strings.TrimSpace(lines[i])
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "issued ") {
+			break
+		}
+		if line == "" || strings.HasPrefix(line, "$") || strings.HasPrefix(lower, "credential id ") || strings.HasPrefix(lower, "skills:") || lower == "show credential" {
+			continue
+		}
+		candidates = append(candidates, line)
+	}
+
+	switch len(candidates) {
+	case 0:
+		return "", ""
+	case 1:
+		return candidates[0], ""
+	default:
+		return candidates[1], candidates[0]
+	}
+}
+
+func certificationDates(line string) (string, string) {
+	var issued, expires string
+	for _, part := range splitClean(normalizeDash(line), "·") {
+		lower := strings.ToLower(part)
+		switch {
+		case strings.HasPrefix(lower, "issued "):
+			issued = strings.TrimSpace(part[len("Issued "):])
+		case strings.HasPrefix(lower, "expires "):
+			expires = strings.TrimSpace(part[len("Expires "):])
+		}
+	}
+	return issued, expires
+}
+
+func (p *ProfileDataParser) mergeLanguages(result *ProfileResult, lines []string, allowUnsectioned bool) {
+	start := indexLine(lines, "Languages")
+	if start < 0 && !allowUnsectioned {
+		return
+	}
+
+	section := lines
+	if start >= 0 {
+		end := nextIndexAny(lines, start+1, "Skills", "Licenses & certifications", "Ad Options", "More profiles for you", "People also viewed", "About")
+		section = sliceUntil(lines, start+1, end)
+	}
+
+	for i := 1; i < len(section); i++ {
+		if !isLanguageProficiency(section[i]) {
+			continue
+		}
+		name := strings.TrimSpace(section[i-1])
+		if name == "" || isChromeLine(name) || looksLikeRecommendationLine(name) {
+			continue
+		}
+		result.Languages = append(result.Languages, Language{
+			Name:        name,
+			Proficiency: strings.TrimSpace(section[i]),
+		})
+	}
+}
+
+func isLanguageProficiency(line string) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "elementary proficiency", "limited working proficiency", "professional working proficiency", "full professional proficiency", "native or bilingual proficiency":
+		return true
+	default:
+		return false
+	}
+}
+
 func htmlTextLines(document string) []string {
 	if isRSCDocument(document) {
 		return rscTextLines(document)
@@ -258,7 +466,7 @@ func rscTextLines(document string) []string {
 			}
 			line := unquoteJSONString(group)
 			line = strings.TrimSpace(strings.ReplaceAll(line, "\u00a0", " "))
-			if line != "" && line != "$undefined" {
+			if line != "" && line != "$undefined" && !strings.HasPrefix(line, "$") {
 				lines = append(lines, line)
 			}
 			break
@@ -341,7 +549,26 @@ func aboutFromRSC(document string) string {
 		}
 		paragraphs = append(paragraphs, paragraph)
 	}
-	return strings.Join(dedupeStrings(paragraphs), "\n")
+	if len(paragraphs) > 0 {
+		return strings.Join(dedupeStrings(paragraphs), "\n")
+	}
+
+	return expandableAboutFromRSC(document)
+}
+
+func expandableAboutFromRSC(document string) string {
+	pattern := regexp.MustCompile(`(?s)"textProps":\{[^{}]{0,1000}"children":\["((?:[^"\\]|\\.)+)"\][^{}]{0,1000}"lineClamp":\d+[^{}]{0,1000}"hasShowMore":(?:true|false)`)
+	for _, match := range pattern.FindAllStringSubmatch(document, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		paragraph := strings.TrimSpace(unquoteJSONString(match[1]))
+		if len(paragraph) < 30 || looksLikeRecommendationLine(paragraph) {
+			continue
+		}
+		return paragraph
+	}
+	return ""
 }
 
 func imagesFromSrcset(srcset string) []ImageArtifact {
@@ -442,14 +669,14 @@ func looksLikeLocation(line string) bool {
 
 func skillsFromSummaryLine(line string) []string {
 	line = strings.TrimSpace(line)
-	lower := strings.ToLower(line)
-	if !strings.Contains(lower, "skill") {
+	if !strings.Contains(strings.ToLower(line), "skill") {
 		return nil
 	}
 	line = strings.TrimSpace(strings.TrimPrefix(line, "Skills:"))
 	if strings.EqualFold(line, "skills") || line == "" {
 		return nil
 	}
+	lower := strings.ToLower(line)
 	if idx := strings.Index(lower, " and +"); idx >= 0 {
 		line = line[:idx]
 	}
@@ -459,7 +686,7 @@ func skillsFromSummaryLine(line string) []string {
 
 func isSkillCategory(line string) bool {
 	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "all", "industry knowledge", "tools & technologies", "other skills", "show all skills":
+	case "all", "industry knowledge", "tools & technologies", "interpersonal skills", "languages", "other skills", "show all skills":
 		return true
 	default:
 		return false

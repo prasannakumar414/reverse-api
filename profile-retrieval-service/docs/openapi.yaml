@@ -278,6 +278,3 @@ components:
           type: integer
         height:
           type: integer
-        expires_at:
-          type: integer
-          format: int64

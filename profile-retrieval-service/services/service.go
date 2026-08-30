@@ -20,7 +20,13 @@ var (
 	ErrFetchFailed       = errors.New("failed to fetch profile from linkedin apis")
 )
 
-const DefaultLinkedInRequestMinInterval = 3 * time.Second
+const DefaultLinkedInRequestMinInterval = 500 * time.Millisecond
+
+const (
+	flagshipSkillsRSCURL = "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details.skills"
+	maxSkillsRSCPages    = 20
+	skillsRSCPageSize    = 10
+)
 
 type ProfileService struct {
 	client       *http.Client
@@ -99,10 +105,9 @@ type ProfileImages struct {
 }
 
 type ImageArtifact struct {
-	URL       string `json:"url"`
-	Width     int    `json:"width,omitempty"`
-	Height    int    `json:"height,omitempty"`
-	ExpiresAt int64  `json:"expires_at,omitempty"`
+	URL    string `json:"url"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
 }
 
 type apiResponse struct {
@@ -156,46 +161,49 @@ func (s *ProfileService) Retrieve(ctx context.Context, profileURL string) (*Prof
 		return nil, err
 	}
 
-	sourceURLs := sourceURLsFor(publicID)
 	htmlURLs := htmlSourceURLsFor(publicID)
-	responses, apiErrors, err := s.fetchAPIs(ctx, sourceURLs)
-	htmlDocuments, htmlErrors := s.fetchHTMLs(ctx, htmlURLs)
-	apiErrors = append(apiErrors, htmlErrors...)
-	sort.Strings(apiErrors)
-
-	if err != nil && len(htmlDocuments) == 0 {
-		return nil, err
-	}
 
 	result := &ProfileResult{
 		ProfileURL: baseURL,
 		PublicID:   publicID,
-		SourceURLs: mergeSourceURLs(sourceURLs, htmlURLs, rscSourceURLsFor(publicID)),
-		APIErrors:  apiErrors,
+		SourceURLs: mergeSourceURLs(htmlURLs),
 	}
 
-	for _, document := range responses {
-		mergeProfileIdentity(result, document)
-		mergeProfile(result, document, publicID)
-		mergeImages(result, document)
-		mergeExperience(result, document)
-		mergeEducation(result, document)
-		mergeSkills(result, document)
-		mergeCertifications(result, document)
-		mergeLanguages(result, document)
-	}
+	htmlDocuments, apiErrors := s.fetchHTMLs(ctx, htmlURLs)
 	for _, document := range htmlDocuments {
 		s.dataParser.Merge(result, document, publicID)
 	}
-	if result.MemberID != "" {
-		rscDocuments, rscErrors := s.fetchRSCs(ctx, rscSourceURLsFor(publicID), publicID, result.MemberID)
-		result.APIErrors = append(result.APIErrors, rscErrors...)
-		sort.Strings(result.APIErrors)
-		for _, document := range rscDocuments {
-			s.dataParser.Merge(result, document, publicID)
-		}
+
+	if len(htmlDocuments) == 0 {
+		return nil, errors.Join(append([]error{ErrFetchFailed}, stringErrors(apiErrors)...)...)
 	}
 
+	normalizeProfileResult(result)
+	rscURLs := rscSourceURLsForMissing(missingFields(result))
+	if result.MemberID != "" && len(rscURLs) > 0 {
+		delete(rscURLs, "flagship_skills_rsc_0")
+		result.SourceURLs = mergeSourceURLs(result.SourceURLs, rscURLs)
+		rscDocuments, rscErrors := s.fetchRSCs(ctx, rscURLs, publicID, result.MemberID)
+		apiErrors = append(apiErrors, rscErrors...)
+		for _, document := range rscDocuments {
+			s.dataParser.MergeRSC(result, document.key, document.data, publicID)
+		}
+	}
+	if result.MemberID != "" {
+		skillSourceURLs, skillErrors := s.mergeAllSkillsFromRSC(ctx, result, publicID, result.MemberID, flagshipSkillsRSCURL)
+		result.SourceURLs = mergeSourceURLs(result.SourceURLs, skillSourceURLs)
+		apiErrors = append(apiErrors, skillErrors...)
+	}
+
+	sort.Strings(apiErrors)
+	result.APIErrors = apiErrors
+	normalizeProfileResult(result)
+	result.Missing = missingFields(result)
+
+	return result, nil
+}
+
+func normalizeProfileResult(result *ProfileResult) {
 	result.Experience = dedupeExperience(result.Experience)
 	result.Education = dedupeEducation(result.Education)
 	result.Skills = dedupeSkills(result.Skills)
@@ -203,9 +211,14 @@ func (s *ProfileService) Retrieve(ctx context.Context, profileURL string) (*Prof
 	result.Languages = dedupeLanguages(result.Languages)
 	result.Images.Profile = dedupeImages(result.Images.Profile)
 	result.Images.Background = dedupeImages(result.Images.Background)
-	result.Missing = missingFields(result)
+}
 
-	return result, nil
+func stringErrors(messages []string) []error {
+	errs := make([]error, 0, len(messages))
+	for _, message := range messages {
+		errs = append(errs, errors.New(message))
+	}
+	return errs
 }
 
 func sourceURLsFor(publicID string) map[string]string {
@@ -237,16 +250,73 @@ func htmlSourceURLsFor(publicID string) map[string]string {
 	}
 }
 
-func rscSourceURLsFor(publicID string) map[string]string {
-	return map[string]string{
-		"flagship_education_rsc": "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details.education",
-		"flagship_about_rsc":     "https://www.linkedin.com/flagship-web/rsc-action/actions/component?componentId=com.linkedin.sdui.generated.profile.dsl.impl.profileCardsAboveActivity&sduiid=com.linkedin.sdui.generated.profile.dsl.impl.profileCardsAboveActivity",
-		"flagship_skills_rsc_0":  "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details.skills",
-		"flagship_skills_rsc_10": "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details.skills",
-		"flagship_skills_rsc_20": "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details.skills",
-		"flagship_skills_rsc_30": "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details.skills",
-		"flagship_skills_rsc_40": "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details.skills",
+func rscSourceURLsForMissing(missing []string) map[string]string {
+	missingSet := make(map[string]bool, len(missing))
+	for _, field := range missing {
+		missingSet[field] = true
 	}
+
+	sourceURLs := map[string]string{}
+	if missingSet["about"] {
+		sourceURLs["flagship_about_rsc"] = "https://www.linkedin.com/flagship-web/rsc-action/actions/component?componentId=com.linkedin.sdui.generated.profile.dsl.impl.profileCardsAboveActivity&sduiid=com.linkedin.sdui.generated.profile.dsl.impl.profileCardsAboveActivity"
+	}
+	for _, section := range []string{"experience", "education", "skills", "certifications", "languages"} {
+		if !missingSet[section] {
+			continue
+		}
+		key := "flagship_" + section + "_rsc_0"
+		if section == "skills" {
+			sourceURLs[key] = flagshipSkillsRSCURL
+		} else {
+			sourceURLs[key] = "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details." + section
+		}
+	}
+	return sourceURLs
+}
+
+func (s *ProfileService) mergeAllSkillsFromRSC(ctx context.Context, result *ProfileResult, publicID, memberID, sourceURL string) (map[string]string, []string) {
+	sourceURLs := map[string]string{}
+	result.Skills = dedupeSkills(result.Skills)
+	seen := make(map[string]bool, len(result.Skills))
+	for _, skill := range result.Skills {
+		seen[strings.ToLower(strings.TrimSpace(skill.Name))] = true
+	}
+
+	var apiErrors []string
+	for page := 0; page < maxSkillsRSCPages; page++ {
+		start := page * skillsRSCPageSize
+		key := fmt.Sprintf("flagship_skills_rsc_%d", start)
+		sourceURLs[key] = sourceURL
+
+		document, err := s.fetchRSC(ctx, key, sourceURL, publicID, memberID)
+		if err != nil {
+			apiErrors = append(apiErrors, fmt.Errorf("%s: %w", sourceURL, err).Error())
+			break
+		}
+
+		pageResult := &ProfileResult{}
+		s.dataParser.MergeRSC(pageResult, key, document, publicID)
+		pageResult.Skills = dedupeSkills(pageResult.Skills)
+		if len(pageResult.Skills) == 0 {
+			break
+		}
+
+		added := 0
+		for _, skill := range pageResult.Skills {
+			name := strings.ToLower(strings.TrimSpace(skill.Name))
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			result.Skills = append(result.Skills, skill)
+			added++
+		}
+		if added == 0 {
+			break
+		}
+	}
+
+	return sourceURLs, apiErrors
 }
 
 func mergeSourceURLs(groups ...map[string]string) map[string]string {
@@ -314,7 +384,7 @@ func (s *ProfileService) fetchHTMLs(ctx context.Context, sourceURLs map[string]s
 	return documents, apiErrors
 }
 
-func (s *ProfileService) fetchRSCs(ctx context.Context, sourceURLs map[string]string, publicID, memberID string) ([]string, []string) {
+func (s *ProfileService) fetchRSCs(ctx context.Context, sourceURLs map[string]string, publicID, memberID string) ([]rscResponse, []string) {
 	ch := make(chan rscResponse, len(sourceURLs))
 	for key, sourceURL := range sourceURLs {
 		go func(key, sourceURL string) {
@@ -323,7 +393,7 @@ func (s *ProfileService) fetchRSCs(ctx context.Context, sourceURLs map[string]st
 		}(key, sourceURL)
 	}
 
-	var documents []string
+	var documents []rscResponse
 	var apiErrors []string
 	for range sourceURLs {
 		response := <-ch
@@ -331,7 +401,7 @@ func (s *ProfileService) fetchRSCs(ctx context.Context, sourceURLs map[string]st
 			apiErrors = append(apiErrors, fmt.Errorf("%s: %w", response.url, response.err).Error())
 			continue
 		}
-		documents = append(documents, response.data)
+		documents = append(documents, response)
 	}
 
 	sort.Strings(apiErrors)
@@ -471,12 +541,15 @@ func rscRequest(key, publicID, memberID string) (string, string) {
 	switch {
 	case key == "flagship_about_rsc":
 		return profileComponentRSCRequestBody(publicID, memberID), "https://www.linkedin.com/in/" + escaped + "/"
-	case key == "flagship_education_rsc":
-		return paginationRSCRequestBody("education", 0, publicID, memberID), "https://www.linkedin.com/in/" + escaped + "/details/education/"
-	case strings.HasPrefix(key, "flagship_skills_rsc_"):
+	case strings.HasPrefix(key, "flagship_") && strings.Contains(key, "_rsc_"):
+		sectionAndStart := strings.TrimPrefix(key, "flagship_")
+		section, startValue, ok := strings.Cut(sectionAndStart, "_rsc_")
+		if !ok {
+			return "{}", "https://www.linkedin.com/in/" + escaped + "/"
+		}
 		start := 0
-		_, _ = fmt.Sscanf(strings.TrimPrefix(key, "flagship_skills_rsc_"), "%d", &start)
-		return paginationRSCRequestBody("skills", start, publicID, memberID), "https://www.linkedin.com/in/" + escaped + "/details/skills/"
+		_, _ = fmt.Sscanf(startValue, "%d", &start)
+		return paginationRSCRequestBody(section, start, publicID, memberID), "https://www.linkedin.com/in/" + escaped + "/details/" + section + "/"
 	default:
 		return "{}", "https://www.linkedin.com/in/" + escaped + "/"
 	}
@@ -693,10 +766,9 @@ func mergeImages(result *ProfileResult, document any) {
 				continue
 			}
 			artifacts = append(artifacts, ImageArtifact{
-				URL:       rootURL + segment,
-				Width:     intField(artifact, "width"),
-				Height:    intField(artifact, "height"),
-				ExpiresAt: int64Field(artifact, "expiresAt"),
+				URL:    rootURL + segment,
+				Width:  intField(artifact, "width"),
+				Height: intField(artifact, "height"),
 			})
 		}
 
@@ -1015,7 +1087,7 @@ func dedupeSkills(items []Skill) []Skill {
 	var out []Skill
 	for _, item := range items {
 		key := strings.ToLower(item.Name)
-		if key == "" || seen[key] {
+		if key == "" || isSkillCategory(item.Name) || seen[key] {
 			continue
 		}
 		seen[key] = true

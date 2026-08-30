@@ -27,20 +27,25 @@ func (p *RequestPacer) Wait(ctx context.Context) error {
 		return nil
 	}
 
-	wait := p.reserveDelay()
-	if wait <= 0 {
-		return nil
-	}
+	for {
+		wait := p.delayUntilNextSlot()
+		if wait <= 0 {
+			return nil
+		}
 
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-p.after(wait):
-		return nil
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.after(wait):
+		}
 	}
 }
 
-func (p *RequestPacer) reserveDelay() time.Duration {
+func (p *RequestPacer) delayUntilNextSlot() time.Duration {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -50,7 +55,5 @@ func (p *RequestPacer) reserveDelay() time.Duration {
 		return 0
 	}
 
-	wait := p.next.Sub(now)
-	p.next = p.next.Add(p.interval)
-	return wait
+	return p.next.Sub(now)
 }

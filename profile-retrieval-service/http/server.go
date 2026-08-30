@@ -40,20 +40,20 @@ func NewServer(config Config) *Server {
 		RequestMinInterval: config.LinkedInRequestMinInterval,
 	})
 	profileController := controller.NewProfileController(profileService)
-	profileRetrieveHandler := profileController.Retrieve
-	if config.ProfileRateLimitRequests > 0 && config.ProfileRateLimitWindow > 0 {
-		profileRetrieveHandler = helper.NewRateLimiter(helper.RateLimitConfig{
-			Requests: config.ProfileRateLimitRequests,
-			Window:   config.ProfileRateLimitWindow,
-		}).Wrap(profileRetrieveHandler)
-	}
+	// profileRetrieveHandler := profileController.Retrieve
+	// if config.ProfileRateLimitRequests > 0 && config.ProfileRateLimitWindow > 0 {
+	// 	profileRetrieveHandler = helper.NewRateLimiter(helper.RateLimitConfig{
+	// 		Requests: config.ProfileRateLimitRequests,
+	// 		Window:   config.ProfileRateLimitWindow,
+	// 	}).Wrap(profileRetrieveHandler)
+	// }
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", helper.RequireMethod(http.MethodGet, healthController.Health))
 	mux.HandleFunc("/docs", helper.RequireMethod(http.MethodGet, docsController.Docs))
 	mux.HandleFunc("/docs/", helper.RequireMethod(http.MethodGet, docsController.Docs))
 	mux.HandleFunc("/docs/openapi.yaml", helper.RequireMethod(http.MethodGet, docsController.OpenAPI))
-	mux.HandleFunc("/profiles/retrieve", profileRetrieveHandler)
+	mux.HandleFunc("/profiles/retrieve", profileController.Retrieve)
 
 	return &Server{
 		server: &http.Server{

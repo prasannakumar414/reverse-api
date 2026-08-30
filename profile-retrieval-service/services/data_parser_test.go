@@ -100,6 +100,116 @@ func TestProfileDataParserMergeExperience(t *testing.T) {
 	}
 }
 
+func TestProfileDataParserMergeMultipleExperiences(t *testing.T) {
+	document := `
+		<html><body>
+			<section>
+				<h2>Experience</h2>
+				<div>Junior Software Engineer</div>
+				<div>H&amp;M · Full-time</div>
+				<div>Apr 2026 - Present · 5 mos</div>
+				<div>Bengaluru, Karnataka, India · On-site</div>
+				<div>Software Engineer</div>
+				<div>Apxor · Full-time</div>
+				<div>Aug 2025 - Mar 2026 · 8 mos</div>
+				<div>Hyderabad, Telangana, India · On-site</div>
+				<div>Contributor</div>
+				<div>GirlScript Summer of Code · Part-time</div>
+				<div>May 2024 - Aug 2024 · 4 mos</div>
+				<div>Gssoc'24 Contributor</div>
+				<div>Champion badge</div>
+				<div>Android Developer</div>
+				<div>Incrivelsoft LLC. · Internship</div>
+				<div>May 2024 - Jul 2024 · 3 mos</div>
+				<div>Remote</div>
+				<div>Java</div>
+				<div>Ad Options</div>
+			</section>
+		</body></html>`
+
+	result := &ProfileResult{}
+	NewProfileDataParser().Merge(result, document, "")
+
+	if len(result.Experience) != 4 {
+		t.Fatalf("experience length = %d: %#v", len(result.Experience), result.Experience)
+	}
+	expected := []Experience{
+		{
+			Title:          "Junior Software Engineer",
+			Company:        "H&M",
+			EmploymentType: "Full-time",
+			DateRange:      "Apr 2026 - Present · 5 mos",
+			Location:       "Bengaluru, Karnataka, India · On-site",
+		},
+		{
+			Title:          "Software Engineer",
+			Company:        "Apxor",
+			EmploymentType: "Full-time",
+			DateRange:      "Aug 2025 - Mar 2026 · 8 mos",
+			Location:       "Hyderabad, Telangana, India · On-site",
+		},
+		{
+			Title:          "Contributor",
+			Company:        "GirlScript Summer of Code",
+			EmploymentType: "Part-time",
+			DateRange:      "May 2024 - Aug 2024 · 4 mos",
+			Description:    "Gssoc'24 Contributor\nChampion badge",
+		},
+		{
+			Title:          "Android Developer",
+			Company:        "Incrivelsoft LLC.",
+			EmploymentType: "Internship",
+			DateRange:      "May 2024 - Jul 2024 · 3 mos",
+			Location:       "Remote",
+			Description:    "Java",
+		},
+	}
+	if !reflect.DeepEqual(result.Experience, expected) {
+		t.Fatalf("experience = %#v, want %#v", result.Experience, expected)
+	}
+}
+
+func TestProfileDataParserMergeExperienceWithoutEmploymentType(t *testing.T) {
+	document := `
+		<html><body>
+			<section>
+				<h2>Experience</h2>
+				<div>Software Engineer</div>
+				<div>Acme Labs</div>
+				<div>Jan 2025 - Present</div>
+				<div>Built internal developer tools.</div>
+				<div>Contributor</div>
+				<div>Open Source Community</div>
+				<div>May 2024 - Dec 2024</div>
+				<div>Remote</div>
+				<div>Maintained Go libraries.</div>
+				<div>Ad Options</div>
+			</section>
+		</body></html>`
+
+	result := &ProfileResult{}
+	NewProfileDataParser().Merge(result, document, "")
+
+	expected := []Experience{
+		{
+			Title:       "Software Engineer",
+			Company:     "Acme Labs",
+			DateRange:   "Jan 2025 - Present",
+			Description: "Built internal developer tools.",
+		},
+		{
+			Title:       "Contributor",
+			Company:     "Open Source Community",
+			DateRange:   "May 2024 - Dec 2024",
+			Location:    "Remote",
+			Description: "Maintained Go libraries.",
+		},
+	}
+	if !reflect.DeepEqual(result.Experience, expected) {
+		t.Fatalf("experience = %#v, want %#v", result.Experience, expected)
+	}
+}
+
 func TestProfileDataParserMergeEducationAndSkills(t *testing.T) {
 	document := `
 		<html><body>
@@ -113,6 +223,7 @@ func TestProfileDataParserMergeEducationAndSkills(t *testing.T) {
 				<div>Skills</div>
 				<div>All</div>
 				<div>Industry Knowledge</div>
+				<div>Interpersonal Skills</div>
 				<div>Python</div>
 				<div>LangChain</div>
 				<div>People also viewed</div>
@@ -203,6 +314,24 @@ func TestProfileDataParserMergeRSCAbout(t *testing.T) {
 	}
 }
 
+func TestProfileDataParserMergeRSCExpandableAbout(t *testing.T) {
+	document := `
+		9:["$","$Le",null,{"textProps":{"children":["About"]}}]
+		10:["$","span",null,{"children":["Jennifer started a new position as Junior Software Engineer at H&M"]}]
+		11:["$","$L1a",null,{"textProps":{"fontFamily":"sans","fontSize":"small","children":["Student of Computer Science and Engeenering at JNTU-GV, UCEV"],"linkColorTokens":"$undefined","lineClamp":3,"hasShowMore":false,"expandButtonText":"more","shouldCollapseNewLines":false}}]
+	`
+
+	result := &ProfileResult{}
+	NewProfileDataParser().MergeRSC(result, "flagship_about_rsc", document, "jennifer-eunice-64a517230")
+
+	if result.About != "Student of Computer Science and Engeenering at JNTU-GV, UCEV" {
+		t.Fatalf("About = %q", result.About)
+	}
+	if strings.Contains(result.About, "started a new position") {
+		t.Fatalf("About includes highlight text: %q", result.About)
+	}
+}
+
 func TestProfileDataParserMergeRSCSkills(t *testing.T) {
 	document := `
 		"aria-label":"Endorse Red Hat Enterprise Linux (RHEL)"
@@ -223,5 +352,89 @@ func TestProfileDataParserMergeRSCSkills(t *testing.T) {
 	}
 	if !reflect.DeepEqual(result.Skills, expected) {
 		t.Fatalf("Skills = %#v", result.Skills)
+	}
+}
+
+func TestProfileDataParserMergeCertifications(t *testing.T) {
+	document := `
+		<html><body>
+			<section>
+				<h2>Licenses &amp; certifications</h2>
+				<div>Microsoft Certified: Azure AI Engineer Associate</div>
+				<div>Microsoft</div>
+				<div>Issued Jul 2024 · Expires Jul 2025</div>
+				<div>Credential ID ABC-123</div>
+				<div>Skills: Azure AI, Python and +2 skills</div>
+				<div>AWS Academy Graduate - AWS Academy Cloud Foundations</div>
+				<div>Issued Oct 2021</div>
+				<div>People also viewed</div>
+			</section>
+		</body></html>`
+
+	result := &ProfileResult{}
+	NewProfileDataParser().Merge(result, document, "rithik-kadali-2627711a4")
+
+	if len(result.Certifications) != 2 {
+		t.Fatalf("certifications length = %d %#v", len(result.Certifications), result.Certifications)
+	}
+	item := result.Certifications[0]
+	if item.Name != "Microsoft Certified: Azure AI Engineer Associate" || item.Issuer != "Microsoft" {
+		t.Fatalf("certification = %#v", item)
+	}
+	if item.Issued != "Jul 2024" || item.Expires != "Jul 2025" || item.CredentialID != "ABC-123" {
+		t.Fatalf("certification metadata = %#v", item)
+	}
+	if !reflect.DeepEqual(item.Skills, []string{"Azure AI", "Python"}) {
+		t.Fatalf("certification skills = %#v", item.Skills)
+	}
+	if result.Certifications[1].Name != "AWS Academy Graduate - AWS Academy Cloud Foundations" {
+		t.Fatalf("second certification = %#v", result.Certifications[1])
+	}
+}
+
+func TestProfileDataParserMergeLanguages(t *testing.T) {
+	document := `
+		<html><body>
+			<section>
+				<h2>Languages</h2>
+				<div>English</div>
+				<div>Full professional proficiency</div>
+				<div>Telugu</div>
+				<div>Native or bilingual proficiency</div>
+				<div>People also viewed</div>
+			</section>
+		</body></html>`
+
+	result := &ProfileResult{}
+	NewProfileDataParser().Merge(result, document, "rithik-kadali-2627711a4")
+
+	expected := []Language{
+		{Name: "English", Proficiency: "Full professional proficiency"},
+		{Name: "Telugu", Proficiency: "Native or bilingual proficiency"},
+	}
+	if !reflect.DeepEqual(result.Languages, expected) {
+		t.Fatalf("languages = %#v", result.Languages)
+	}
+}
+
+func TestProfileDataParserMergeRSCOnlyTouchesRequestedSection(t *testing.T) {
+	document := `
+		1:["$","p",null,{"children":["Languages"]}]
+		2:["$","p",null,{"children":["Nothing to see for now"]}]
+	`
+
+	result := &ProfileResult{}
+	NewProfileDataParser().MergeRSC(
+		result,
+		"flagship_languages_rsc_0",
+		document,
+		"rithik-kadali-2627711a4",
+	)
+
+	if len(result.Education) != 0 {
+		t.Fatalf("language RSC created education entries: %#v", result.Education)
+	}
+	if len(result.Languages) != 0 {
+		t.Fatalf("empty language RSC created language entries: %#v", result.Languages)
 	}
 }

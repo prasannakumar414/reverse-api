@@ -17,8 +17,9 @@ func TestRequestPacerSpacesRequests(t *testing.T) {
 	}
 	pacer.after = func(wait time.Duration) <-chan time.Time {
 		waits = append(waits, wait)
+		now = now.Add(wait)
 		ch := make(chan time.Time, 1)
-		ch <- now.Add(wait)
+		ch <- now
 		return ch
 	}
 
@@ -32,7 +33,7 @@ func TestRequestPacerSpacesRequests(t *testing.T) {
 		t.Fatalf("third wait returned error: %v", err)
 	}
 
-	expected := []time.Duration{2 * time.Second, 4 * time.Second}
+	expected := []time.Duration{2 * time.Second, 2 * time.Second}
 	if !reflect.DeepEqual(waits, expected) {
 		t.Fatalf("waits = %#v", waits)
 	}
@@ -57,5 +58,37 @@ func TestRequestPacerHonorsContextCancellation(t *testing.T) {
 
 	if err := pacer.Wait(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("second wait error = %v", err)
+	}
+}
+
+func TestRequestPacerDoesNotReserveSlotForCanceledWait(t *testing.T) {
+	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	var waits []time.Duration
+	pacer := NewRequestPacer(time.Minute)
+	pacer.now = func() time.Time {
+		return now
+	}
+	pacer.after = func(wait time.Duration) <-chan time.Time {
+		waits = append(waits, wait)
+		return make(chan time.Time)
+	}
+
+	if err := pacer.Wait(context.Background()); err != nil {
+		t.Fatalf("first wait returned error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := pacer.Wait(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("second wait error = %v", err)
+	}
+
+	now = now.Add(time.Minute)
+	if err := pacer.Wait(context.Background()); err != nil {
+		t.Fatalf("third wait returned error: %v", err)
+	}
+
+	if len(waits) != 0 {
+		t.Fatalf("canceled wait reserved a future slot; waits = %#v", waits)
 	}
 }
