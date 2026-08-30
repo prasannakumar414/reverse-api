@@ -23,9 +23,11 @@ var (
 const DefaultLinkedInRequestMinInterval = 500 * time.Millisecond
 
 const (
-	flagshipSkillsRSCURL = "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details.skills"
-	maxSkillsRSCPages    = 20
-	skillsRSCPageSize    = 10
+	flagshipExperienceRSCURL = "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details.experience"
+	flagshipEducationRSCURL  = "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details.education"
+	flagshipSkillsRSCURL     = "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details.skills"
+	maxDetailRSCPages        = 20
+	detailRSCPageSize        = 10
 )
 
 type ProfileService struct {
@@ -179,14 +181,32 @@ func (s *ProfileService) Retrieve(ctx context.Context, profileURL string) (*Prof
 	}
 
 	normalizeProfileResult(result)
-	rscURLs := rscSourceURLsForMissing(missingFields(result))
-	if result.MemberID != "" && len(rscURLs) > 0 {
-		delete(rscURLs, "flagship_skills_rsc_0")
+	missing := missingFields(result)
+	missingSet := make(map[string]bool, len(missing))
+	for _, field := range missing {
+		missingSet[field] = true
+	}
+	needsExperienceRSC := missingSet["experience"]
+	needsEducationRSC := missingSet["education"]
+	rscURLs := singleRSCSourceURLsForMissing(missing)
+	if result.MemberID != "" && (len(rscURLs) > 0 || needsExperienceRSC || needsEducationRSC) {
 		result.SourceURLs = mergeSourceURLs(result.SourceURLs, rscURLs)
 		rscDocuments, rscErrors := s.fetchRSCs(ctx, rscURLs, publicID, result.MemberID)
 		apiErrors = append(apiErrors, rscErrors...)
 		for _, document := range rscDocuments {
-			s.dataParser.MergeRSC(result, document.key, document.data, publicID)
+			if err := s.dataParser.MergeRSC(result, document.key, document.data); err != nil {
+				apiErrors = append(apiErrors, fmt.Errorf("%s: %w", document.url, err).Error())
+			}
+		}
+		if needsExperienceRSC {
+			sourceURLs, sectionErrors := s.mergeAllProfileItemsFromRSC(ctx, result, publicID, result.MemberID, "experience", flagshipExperienceRSCURL)
+			result.SourceURLs = mergeSourceURLs(result.SourceURLs, sourceURLs)
+			apiErrors = append(apiErrors, sectionErrors...)
+		}
+		if needsEducationRSC {
+			sourceURLs, sectionErrors := s.mergeAllProfileItemsFromRSC(ctx, result, publicID, result.MemberID, "education", flagshipEducationRSCURL)
+			result.SourceURLs = mergeSourceURLs(result.SourceURLs, sourceURLs)
+			apiErrors = append(apiErrors, sectionErrors...)
 		}
 	}
 	if result.MemberID != "" {
@@ -250,7 +270,7 @@ func htmlSourceURLsFor(publicID string) map[string]string {
 	}
 }
 
-func rscSourceURLsForMissing(missing []string) map[string]string {
+func singleRSCSourceURLsForMissing(missing []string) map[string]string {
 	missingSet := make(map[string]bool, len(missing))
 	for _, field := range missing {
 		missingSet[field] = true
@@ -260,16 +280,12 @@ func rscSourceURLsForMissing(missing []string) map[string]string {
 	if missingSet["about"] {
 		sourceURLs["flagship_about_rsc"] = "https://www.linkedin.com/flagship-web/rsc-action/actions/component?componentId=com.linkedin.sdui.generated.profile.dsl.impl.profileCardsAboveActivity&sduiid=com.linkedin.sdui.generated.profile.dsl.impl.profileCardsAboveActivity"
 	}
-	for _, section := range []string{"experience", "education", "skills", "certifications", "languages"} {
+	for _, section := range []string{"certifications", "languages"} {
 		if !missingSet[section] {
 			continue
 		}
 		key := "flagship_" + section + "_rsc_0"
-		if section == "skills" {
-			sourceURLs[key] = flagshipSkillsRSCURL
-		} else {
-			sourceURLs[key] = "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details." + section
-		}
+		sourceURLs[key] = "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.profile.details." + section
 	}
 	return sourceURLs
 }
@@ -283,8 +299,8 @@ func (s *ProfileService) mergeAllSkillsFromRSC(ctx context.Context, result *Prof
 	}
 
 	var apiErrors []string
-	for page := 0; page < maxSkillsRSCPages; page++ {
-		start := page * skillsRSCPageSize
+	for page := 0; page < maxDetailRSCPages; page++ {
+		start := page * detailRSCPageSize
 		key := fmt.Sprintf("flagship_skills_rsc_%d", start)
 		sourceURLs[key] = sourceURL
 
@@ -295,7 +311,10 @@ func (s *ProfileService) mergeAllSkillsFromRSC(ctx context.Context, result *Prof
 		}
 
 		pageResult := &ProfileResult{}
-		s.dataParser.MergeRSC(pageResult, key, document, publicID)
+		if err := s.dataParser.MergeRSC(pageResult, key, document); err != nil {
+			apiErrors = append(apiErrors, fmt.Errorf("%s: %w", sourceURL, err).Error())
+			break
+		}
 		pageResult.Skills = dedupeSkills(pageResult.Skills)
 		if len(pageResult.Skills) == 0 {
 			break
@@ -316,6 +335,56 @@ func (s *ProfileService) mergeAllSkillsFromRSC(ctx context.Context, result *Prof
 		}
 	}
 
+	return sourceURLs, apiErrors
+}
+
+func (s *ProfileService) mergeAllProfileItemsFromRSC(ctx context.Context, result *ProfileResult, publicID, memberID, section, sourceURL string) (map[string]string, []string) {
+	if section != "experience" && section != "education" {
+		return nil, []string{fmt.Errorf("unsupported paginated profile section %q", section).Error()}
+	}
+
+	sourceURLs := map[string]string{}
+	var apiErrors []string
+	for page := 0; page < maxDetailRSCPages; page++ {
+		start := page * detailRSCPageSize
+		key := fmt.Sprintf("flagship_%s_rsc_%d", section, start)
+		sourceURLs[key] = sourceURL
+
+		document, err := s.fetchRSC(ctx, key, sourceURL, publicID, memberID)
+		if err != nil {
+			apiErrors = append(apiErrors, fmt.Errorf("%s: %w", sourceURL, err).Error())
+			break
+		}
+
+		pageResult := &ProfileResult{}
+		if err := s.dataParser.MergeRSC(pageResult, key, document); err != nil {
+			apiErrors = append(apiErrors, fmt.Errorf("%s: %w", sourceURL, err).Error())
+			break
+		}
+		if len(pageResult.Experience) == 0 && len(pageResult.Education) == 0 {
+			break
+		}
+
+		before := 0
+		switch section {
+		case "experience":
+			result.Experience = dedupeExperience(result.Experience)
+			before = len(result.Experience)
+			result.Experience = append(result.Experience, pageResult.Experience...)
+			result.Experience = dedupeExperience(result.Experience)
+			if len(result.Experience) == before {
+				return sourceURLs, apiErrors
+			}
+		case "education":
+			result.Education = dedupeEducation(result.Education)
+			before = len(result.Education)
+			result.Education = append(result.Education, pageResult.Education...)
+			result.Education = dedupeEducation(result.Education)
+			if len(result.Education) == before {
+				return sourceURLs, apiErrors
+			}
+		}
+	}
 	return sourceURLs, apiErrors
 }
 

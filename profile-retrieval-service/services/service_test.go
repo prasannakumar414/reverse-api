@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -26,12 +28,11 @@ func TestHTMLSourceURLsIncludeAllDetailPages(t *testing.T) {
 	}
 }
 
-func TestRSCSourceURLsOnlyIncludeMissingSections(t *testing.T) {
-	sourceURLs := rscSourceURLsForMissing([]string{"about", "skills", "languages"})
+func TestSingleRSCSourceURLsOnlyIncludeNonPaginatedSections(t *testing.T) {
+	sourceURLs := singleRSCSourceURLsForMissing([]string{"about", "experience", "education", "skills", "languages"})
 
 	for _, key := range []string{
 		"flagship_about_rsc",
-		"flagship_skills_rsc_0",
 		"flagship_languages_rsc_0",
 	} {
 		if sourceURLs[key] == "" {
@@ -41,6 +42,7 @@ func TestRSCSourceURLsOnlyIncludeMissingSections(t *testing.T) {
 	for _, key := range []string{
 		"flagship_experience_rsc_0",
 		"flagship_education_rsc_0",
+		"flagship_skills_rsc_0",
 		"flagship_certifications_rsc_0",
 	} {
 		if sourceURLs[key] != "" {
@@ -114,5 +116,78 @@ func TestMergeAllSkillsFromRSCPaginatesUntilEmpty(t *testing.T) {
 	}
 	if !reflect.DeepEqual(result.Skills, expected) {
 		t.Fatalf("skills = %#v, want %#v", result.Skills, expected)
+	}
+}
+
+func TestMergeAllProfileItemsFromRSCPaginatesUntilEmpty(t *testing.T) {
+	tests := []struct {
+		name       string
+		section    string
+		response   string
+		resultSize func(*ProfileResult) int
+	}{
+		{
+			name:    "experience",
+			section: "experience",
+			response: `0:["$","div",null,{"children":[["$","$L3",null,{"componentKey":"entity-collection-item-one","children":["$","div",null,{"children":["$L1"]}]}]]}]
+1:["$","div",null,{"children":[["$","p",null,{"children":["Engineer"]}],["$","p",null,{"children":["Acme · Full-time"]}],["$","$Ltext",null,{"textProps":{"children":["Jan 2024 - Present"]}}]]}]`,
+			resultSize: func(result *ProfileResult) int { return len(result.Experience) },
+		},
+		{
+			name:    "education",
+			section: "education",
+			response: `0:["$","div",null,{"children":[["$","$L3",null,{"componentKey":"education-one","viewTrackingSpecs":{"viewName":"education-lockup-view"},"children":["$","div",null,{"children":["$L1"]}]}]]}]
+1:["$","div",null,{"children":[["$","p",null,{"children":["State University"]}],["$","p",null,{"children":["Computer Science"]}],["$","$Ltext",null,{"textProps":{"children":["2020 - 2024"]}}]]}]`,
+			resultSize: func(result *ProfileResult) int { return len(result.Education) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			responses := []string{
+				tt.response,
+				`0:["$","div",null,{"children":["Nothing to see for now"]}]`,
+			}
+			var starts []int
+			requestCount := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					ClientArguments struct {
+						Payload struct {
+							Start int `json:"start"`
+						} `json:"payload"`
+					} `json:"clientArguments"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				starts = append(starts, request.ClientArguments.Payload.Start)
+				_, _ = w.Write([]byte(responses[requestCount]))
+				requestCount++
+			}))
+			defer server.Close()
+
+			service := NewProfileServiceWithConfig(ProfileServiceConfig{Client: server.Client(), RequestMinInterval: -1})
+			result := &ProfileResult{}
+			sourceURLs, apiErrors := service.mergeAllProfileItemsFromRSC(
+				context.Background(), result, "profile", "member", tt.section, server.URL,
+			)
+
+			if len(apiErrors) != 0 {
+				t.Fatalf("api errors = %#v", apiErrors)
+			}
+			if !reflect.DeepEqual(starts, []int{0, 10}) {
+				t.Fatalf("starts = %#v", starts)
+			}
+			if tt.resultSize(result) != 1 {
+				t.Fatalf("result = %#v", result)
+			}
+			for _, start := range starts {
+				key := fmt.Sprintf("flagship_%s_rsc_%d", tt.section, start)
+				if sourceURLs[key] != server.URL {
+					t.Fatalf("source URL %s = %q", key, sourceURLs[key])
+				}
+			}
+		})
 	}
 }

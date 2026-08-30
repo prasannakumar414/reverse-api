@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -375,18 +376,23 @@ func TestProfileDataParserMergeEducationAndSkills(t *testing.T) {
 
 func TestProfileDataParserMergeRSCEducation(t *testing.T) {
 	document := `
-		11:["$","p",null,{"children":["JNTU Gurajada Vizianagaram"]}]
-		12:["$","p",null,{"children":["Bachelor of Technology - BTech, Computer Science"]}]
-		13:["$","$Ld",null,{"textProps":{"children":["Jun 2019 – Apr 2022"]}}]
-		14:["$","p",null,{"children":[["$","$1a","text-attr-0",{"children":["$undefined",["$","strong",null,{"children":["Skills:"]}],[["$","span",null,{"children":" "}],"SQL, Java, +2 skills",null]]}]]}]
-		16:["$","p",null,{"children":["State Board of Technical Education and Training (SBTET), Andhra Pradesh"]}]
-		17:["$","p",null,{"children":["Diploma of Education, Computer Science"]}]
-		18:["$","$Ld",null,{"textProps":{"children":["Jun 2016 – Apr 2019"]}}]
-		19:["$","p",null,{"children":[["$","$1a","text-attr-0",{"children":["$undefined",["$","strong",null,{"children":["Skills:"]}],[["$","span",null,{"children":" "}],"SQL, Java, +2 skills",null]]}]]}]
+		0:["$","div",null,{"children":[["$","$L3",null,{"componentKey":"education-one","viewTrackingSpecs":{"viewName":"education-lockup-view"},"children":["$","div",null,{"children":["$L1","$L2"]}]}],["$","hr",null,{}],["$","$L3",null,{"componentKey":"education-two","viewTrackingSpecs":{"viewName":"education-lockup-view"},"children":["$","div",null,{"children":["$L4","$L5"]}]}]]}]
+		1:["$","div",null,{"children":["$L10","$L11","$L12"]}]
+		2:["$","p",null,{"children":["SQL, Java, +2 skills"]}]
+		4:["$","div",null,{"children":["$L13","$L14","$L15"]}]
+		5:["$","p",null,{"children":["SQL, Java, +2 skills"]}]
+		10:["$","p",null,{"children":["JNTU Gurajada Vizianagaram"]}]
+		11:["$","p",null,{"children":["Bachelor of Technology - BTech, Computer Science"]}]
+		12:["$","$Ld",null,{"textProps":{"children":["Jun 2019 – Apr 2022"]}}]
+		13:["$","p",null,{"children":["State Board of Technical Education and Training (SBTET), Andhra Pradesh"]}]
+		14:["$","p",null,{"children":["Bachelor of Technology - BTech, Computer Science"]}]
+		15:["$","$Ld",null,{"textProps":{"children":["Jun 2019 – Apr 2022"]}}]
 	`
 
 	result := &ProfileResult{}
-	NewProfileDataParser().Merge(result, document, "rithik-kadali-2627711a4")
+	if err := NewProfileDataParser().MergeRSC(result, "flagship_education_rsc_0", document); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(result.Education) != 2 {
 		t.Fatalf("education length = %d %#v", len(result.Education), result.Education)
@@ -407,6 +413,57 @@ func TestProfileDataParserMergeRSCEducation(t *testing.T) {
 	if !reflect.DeepEqual(first.Skills, []string{"SQL", "Java"}) {
 		t.Fatalf("first skills = %#v", first.Skills)
 	}
+	if result.Education[1].Degree != "Bachelor of Technology - BTech" || result.Education[1].DateRange != "Jun 2019 - Apr 2022" {
+		t.Fatalf("repeated education values were not preserved: %#v", result.Education[1])
+	}
+}
+
+func TestProfileDataParserMergeRSCExperiencePreservesItemAndRoleBoundaries(t *testing.T) {
+	document := `
+		0:["$","div",null,{"children":[["$","$L3",null,{"componentKey":"entity-collection-item-group","children":["$","div",null,{"children":["$L1",["$","ul",null,{"children":[["$","li","0",{"children":["$L2","$L3"]}],["$","li","1",{"children":["$L4","$L5"]}]]}]]}]}],["$","$L3",null,{"componentKey":"entity-collection-item-standalone","children":["$","div",null,{"children":["$L6","$L7"]}]}]]}]
+		1:["$","div",null,{"children":["$L10","$L11"]}]
+		2:["$","div",null,{"children":["$L12","$L13","$L14","$L15"]}]
+		3:["$","p",null,{"children":["QA Automation, Playwright and +3 skills"]}]
+		4:["$","div",null,{"children":["$L16","$L17"]}]
+		5:["$","p",null,{"children":["Led performance testing initiatives."]}]
+		6:["$","div",null,{"children":["$L18","$L19","$L1a","$L1b"]}]
+		7:["$","p",null,{"children":["Go, PostgreSQL and +2 skills"]}]
+		10:["$","p",null,{"children":["Cognizant"]}]
+		11:["$","p",null,{"children":["3 yrs 3 mos"]}]
+		12:["$","p",null,{"children":["Associate"]}]
+		13:["$","$Ltext",null,{"textProps":{"children":["Full-time"]}}]
+		14:["$","$Ltext",null,{"textProps":{"children":["Jan 2026 - Present · 8 mos"]}}]
+		15:["$","$Ltext",null,{"textProps":{"children":["Hyderabad, Telangana, India"]}}]
+		16:["$","p",null,{"children":["Performance Test Engineer"]}]
+		17:["$","$Ltext",null,{"textProps":{"children":["Jun 2023 - Present · 3 yrs 3 mos"]}}]
+		18:["$","p",null,{"children":["Platform Engineer"]}]
+		19:["$","p",null,{"children":["Acme Labs · Contract"]}]
+		1a:["$","$Ltext",null,{"textProps":{"children":["Feb 2022 - May 2023 · 1 yr 4 mos"]}}]
+		1b:["$","$Ltext",null,{"textProps":{"children":["Remote"]}}]
+	`
+
+	result := &ProfileResult{}
+	if err := NewProfileDataParser().MergeRSC(result, "flagship_experience_rsc_0", document); err != nil {
+		t.Fatal(err)
+	}
+
+	expected := []Experience{
+		{Title: "Associate", Company: "Cognizant", EmploymentType: "Full-time", DateRange: "Jan 2026 - Present · 8 mos", Location: "Hyderabad, Telangana, India", Skills: []string{"QA Automation", "Playwright"}},
+		{Title: "Performance Test Engineer", Company: "Cognizant", EmploymentType: "Full-time", DateRange: "Jun 2023 - Present · 3 yrs 3 mos", Description: "Led performance testing initiatives."},
+		{Title: "Platform Engineer", Company: "Acme Labs", EmploymentType: "Contract", DateRange: "Feb 2022 - May 2023 · 1 yr 4 mos", Location: "Remote", Skills: []string{"Go", "PostgreSQL"}},
+	}
+	if !reflect.DeepEqual(result.Experience, expected) {
+		t.Fatalf("experience = %#v, want %#v", result.Experience, expected)
+	}
+}
+
+func TestProfileDataParserMergeRSCRejectsUnknownExperienceLayout(t *testing.T) {
+	document := `0:["$","div",null,{"children":["Experience","A layout without item ownership"]}]`
+
+	err := NewProfileDataParser().MergeRSC(&ProfileResult{}, "flagship_experience_rsc_0", document)
+	if !errors.Is(err, ErrUnsupportedRSCLayout) {
+		t.Fatalf("error = %v, want ErrUnsupportedRSCLayout", err)
+	}
 }
 
 func TestProfileDataParserMergeRSCAbout(t *testing.T) {
@@ -420,7 +477,9 @@ func TestProfileDataParserMergeRSCAbout(t *testing.T) {
 	`
 
 	result := &ProfileResult{}
-	NewProfileDataParser().Merge(result, document, "rithik-kadali-2627711a4")
+	if err := NewProfileDataParser().MergeRSC(result, "flagship_about_rsc", document); err != nil {
+		t.Fatal(err)
+	}
 
 	if !strings.Contains(result.About, "Software Professional at Wipro Limited") {
 		t.Fatalf("About = %q", result.About)
@@ -438,7 +497,9 @@ func TestProfileDataParserMergeRSCExpandableAbout(t *testing.T) {
 	`
 
 	result := &ProfileResult{}
-	NewProfileDataParser().MergeRSC(result, "flagship_about_rsc", document, "jennifer-eunice-64a517230")
+	if err := NewProfileDataParser().MergeRSC(result, "flagship_about_rsc", document); err != nil {
+		t.Fatal(err)
+	}
 
 	if result.About != "Student of Computer Science and Engeenering at JNTU-GV, UCEV" {
 		t.Fatalf("About = %q", result.About)
@@ -459,7 +520,9 @@ func TestProfileDataParserMergeRSCSkills(t *testing.T) {
 	`
 
 	result := &ProfileResult{}
-	NewProfileDataParser().Merge(result, document, "rithik-kadali-2627711a4")
+	if err := NewProfileDataParser().MergeRSC(result, "flagship_skills_rsc_0", document); err != nil {
+		t.Fatal(err)
+	}
 
 	expected := []Skill{
 		{Name: "Red Hat Enterprise Linux (RHEL)"},
@@ -540,12 +603,13 @@ func TestProfileDataParserMergeRSCOnlyTouchesRequestedSection(t *testing.T) {
 	`
 
 	result := &ProfileResult{}
-	NewProfileDataParser().MergeRSC(
+	if err := NewProfileDataParser().MergeRSC(
 		result,
 		"flagship_languages_rsc_0",
 		document,
-		"rithik-kadali-2627711a4",
-	)
+	); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(result.Education) != 0 {
 		t.Fatalf("language RSC created education entries: %#v", result.Education)

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"html"
 	"regexp"
 	"strconv"
@@ -20,54 +21,58 @@ func (p *ProfileDataParser) Merge(result *ProfileResult, document string, public
 		return
 	}
 
-	isRSC := isRSCDocument(document)
 	lines := htmlTextLines(document)
-	experienceLines := lines
-	if !isRSC {
-		experienceLines = htmlExperienceTextLines(document)
-	}
 	p.mergeProfile(result, document, lines, publicID)
-	if isRSC {
-		if about := aboutFromRSC(document); about != "" {
-			result.About = about
-		}
-	}
 	p.mergeImages(result, document)
-	p.mergeExperience(result, experienceLines)
-	p.mergeEducation(result, lines, isRSC)
+	p.mergeExperience(result, htmlExperienceTextLines(document))
+	p.mergeEducation(result, lines)
 	p.mergeSkills(result, lines)
-	if isRSC {
-		p.mergeRSCSkills(result, document)
-	}
-	p.mergeCertifications(result, lines, isRSC)
-	p.mergeLanguages(result, lines, isRSC)
+	p.mergeCertifications(result, lines, false)
+	p.mergeLanguages(result, lines, false)
 }
 
-func (p *ProfileDataParser) MergeRSC(result *ProfileResult, key, document, publicID string) {
+func (p *ProfileDataParser) MergeRSC(result *ProfileResult, key, document string) error {
 	if result == nil || document == "" {
-		return
+		return nil
 	}
 
-	lines := rscTextLines(document)
 	switch {
 	case key == "flagship_about_rsc":
 		if about := aboutFromRSC(document); about != "" {
 			result.About = about
 		}
 	case strings.HasPrefix(key, "flagship_experience_rsc_"):
-		p.mergeExperience(result, lines)
+		flight, err := decodeFlightDocument(document)
+		if err != nil {
+			return err
+		}
+		items, err := flight.experienceItems()
+		if err != nil {
+			return err
+		}
+		result.Experience = append(result.Experience, items...)
 	case strings.HasPrefix(key, "flagship_education_rsc_"):
-		p.mergeEducation(result, lines, true)
+		flight, err := decodeFlightDocument(document)
+		if err != nil {
+			return err
+		}
+		items, err := flight.educationItems()
+		if err != nil {
+			return err
+		}
+		result.Education = append(result.Education, items...)
 	case strings.HasPrefix(key, "flagship_skills_rsc_"):
-		p.mergeSkills(result, lines)
 		p.mergeRSCSkills(result, document)
 	case strings.HasPrefix(key, "flagship_certifications_rsc_"):
+		lines := rscTextLines(document)
 		p.mergeCertifications(result, lines, true)
 	case strings.HasPrefix(key, "flagship_languages_rsc_"):
+		lines := rscTextLines(document)
 		p.mergeLanguages(result, lines, true)
 	default:
-		p.Merge(result, document, publicID)
+		return fmt.Errorf("%w: unknown response key %q", ErrUnsupportedRSCLayout, key)
 	}
+	return nil
 }
 
 func (p *ProfileDataParser) mergeProfile(result *ProfileResult, document string, lines []string, publicID string) {
@@ -88,9 +93,6 @@ func (p *ProfileDataParser) mergeProfile(result *ProfileResult, document string,
 	}
 	if result.About == "" {
 		result.About = aboutFromLines(lines, publicID)
-	}
-	if result.About == "" {
-		result.About = aboutFromRSC(document)
 	}
 }
 
@@ -370,21 +372,13 @@ func looksLikeDurationSummary(line string) bool {
 	return regexp.MustCompile(`^\d+\s+(?:yrs?|mos?)(?:\s+\d+\s+mos?)?$`).MatchString(line)
 }
 
-func (p *ProfileDataParser) mergeEducation(result *ProfileResult, lines []string, allowUnsectioned bool) {
+func (p *ProfileDataParser) mergeEducation(result *ProfileResult, lines []string) {
 	start := indexLine(lines, "Education")
-	end := len(lines)
-	if start >= 0 {
-		end = nextIndexAny(lines, start+1, "Ad Options", "More profiles for you", "People also viewed", "About")
-	} else if !allowUnsectioned {
+	if start < 0 {
 		return
 	}
+	end := nextIndexAny(lines, start+1, "Ad Options", "More profiles for you", "People also viewed", "About")
 	section := sliceUntil(lines, start+1, end)
-	if start < 0 {
-		section = lines
-		if !containsEducationDegree(section) {
-			return
-		}
-	}
 	if len(section) == 0 {
 		return
 	}
@@ -410,15 +404,6 @@ func (p *ProfileDataParser) mergeEducation(result *ProfileResult, lines []string
 	if item.School != "" || item.Degree != "" {
 		result.Education = append(result.Education, item)
 	}
-}
-
-func containsEducationDegree(lines []string) bool {
-	for _, line := range lines {
-		if looksLikeEducationDegree(line) {
-			return true
-		}
-	}
-	return false
 }
 
 func educationItemsFromLines(lines []string) []Education {
@@ -620,10 +605,6 @@ func htmlExperienceTextLines(document string) []string {
 }
 
 func htmlTextLinesWithListBoundaries(document string, preserveListItemBoundaries bool) []string {
-	if isRSCDocument(document) {
-		return rscTextLines(document)
-	}
-
 	cleaned := regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`).ReplaceAllString(document, " ")
 	cleaned = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`).ReplaceAllString(cleaned, " ")
 	if preserveListItemBoundaries {
@@ -645,10 +626,6 @@ func htmlTextLinesWithListBoundaries(document string, preserveListItemBoundaries
 		lines = append(lines, line)
 	}
 	return lines
-}
-
-func isRSCDocument(document string) bool {
-	return !strings.Contains(document, "<") && strings.Contains(document, `"children"`)
 }
 
 func rscTextLines(document string) []string {
