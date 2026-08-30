@@ -182,34 +182,27 @@ func (s *ProfileService) Retrieve(ctx context.Context, profileURL string) (*Prof
 
 	normalizeProfileResult(result)
 	missing := missingFields(result)
-	missingSet := make(map[string]bool, len(missing))
-	for _, field := range missing {
-		missingSet[field] = true
-	}
-	needsExperienceRSC := missingSet["experience"]
-	needsEducationRSC := missingSet["education"]
 	rscURLs := singleRSCSourceURLsForMissing(missing)
-	if result.MemberID != "" && (len(rscURLs) > 0 || needsExperienceRSC || needsEducationRSC) {
+	if result.MemberID != "" {
 		result.SourceURLs = mergeSourceURLs(result.SourceURLs, rscURLs)
-		rscDocuments, rscErrors := s.fetchRSCs(ctx, rscURLs, publicID, result.MemberID)
-		apiErrors = append(apiErrors, rscErrors...)
-		for _, document := range rscDocuments {
-			if err := s.dataParser.MergeRSC(result, document.key, document.data); err != nil {
-				apiErrors = append(apiErrors, fmt.Errorf("%s: %w", document.url, err).Error())
+		if len(rscURLs) > 0 {
+			rscDocuments, rscErrors := s.fetchRSCs(ctx, rscURLs, publicID, result.MemberID)
+			apiErrors = append(apiErrors, rscErrors...)
+			for _, document := range rscDocuments {
+				if err := s.dataParser.MergeRSC(result, document.key, document.data); err != nil {
+					apiErrors = append(apiErrors, fmt.Errorf("%s: %w", document.url, err).Error())
+				}
 			}
 		}
-		if needsExperienceRSC {
-			sourceURLs, sectionErrors := s.mergeAllProfileItemsFromRSC(ctx, result, publicID, result.MemberID, "experience", flagshipExperienceRSCURL)
-			result.SourceURLs = mergeSourceURLs(result.SourceURLs, sourceURLs)
-			apiErrors = append(apiErrors, sectionErrors...)
-		}
-		if needsEducationRSC {
-			sourceURLs, sectionErrors := s.mergeAllProfileItemsFromRSC(ctx, result, publicID, result.MemberID, "education", flagshipEducationRSCURL)
-			result.SourceURLs = mergeSourceURLs(result.SourceURLs, sourceURLs)
-			apiErrors = append(apiErrors, sectionErrors...)
-		}
-	}
-	if result.MemberID != "" {
+
+		experienceSourceURLs, experienceErrors := s.mergeAllProfileItemsFromRSC(ctx, result, publicID, result.MemberID, "experience", flagshipExperienceRSCURL)
+		result.SourceURLs = mergeSourceURLs(result.SourceURLs, experienceSourceURLs)
+		apiErrors = append(apiErrors, experienceErrors...)
+
+		educationSourceURLs, educationErrors := s.mergeAllProfileItemsFromRSC(ctx, result, publicID, result.MemberID, "education", flagshipEducationRSCURL)
+		result.SourceURLs = mergeSourceURLs(result.SourceURLs, educationSourceURLs)
+		apiErrors = append(apiErrors, educationErrors...)
+
 		skillSourceURLs, skillErrors := s.mergeAllSkillsFromRSC(ctx, result, publicID, result.MemberID, flagshipSkillsRSCURL)
 		result.SourceURLs = mergeSourceURLs(result.SourceURLs, skillSourceURLs)
 		apiErrors = append(apiErrors, skillErrors...)
@@ -345,6 +338,9 @@ func (s *ProfileService) mergeAllProfileItemsFromRSC(ctx context.Context, result
 
 	sourceURLs := map[string]string{}
 	var apiErrors []string
+	canonical := &ProfileResult{}
+
+pages:
 	for page := 0; page < maxDetailRSCPages; page++ {
 		start := page * detailRSCPageSize
 		key := fmt.Sprintf("flagship_%s_rsc_%d", section, start)
@@ -368,21 +364,35 @@ func (s *ProfileService) mergeAllProfileItemsFromRSC(ctx context.Context, result
 		before := 0
 		switch section {
 		case "experience":
-			result.Experience = dedupeExperience(result.Experience)
-			before = len(result.Experience)
-			result.Experience = append(result.Experience, pageResult.Experience...)
-			result.Experience = dedupeExperience(result.Experience)
-			if len(result.Experience) == before {
-				return sourceURLs, apiErrors
+			canonical.Experience = dedupeExperience(canonical.Experience)
+			before = len(canonical.Experience)
+			canonical.Experience = append(canonical.Experience, pageResult.Experience...)
+			canonical.Experience = dedupeExperience(canonical.Experience)
+			if len(canonical.Experience) == before {
+				break pages
 			}
 		case "education":
-			result.Education = dedupeEducation(result.Education)
-			before = len(result.Education)
-			result.Education = append(result.Education, pageResult.Education...)
-			result.Education = dedupeEducation(result.Education)
-			if len(result.Education) == before {
-				return sourceURLs, apiErrors
+			canonical.Education = dedupeEducation(canonical.Education)
+			before = len(canonical.Education)
+			canonical.Education = append(canonical.Education, pageResult.Education...)
+			canonical.Education = dedupeEducation(canonical.Education)
+			if len(canonical.Education) == before {
+				break pages
 			}
+		}
+	}
+
+	// Structurally decoded RSC data is authoritative. Keep the existing HTML
+	// section untouched when RSC fails or yields no records so it remains a
+	// genuine fallback rather than being mixed with structurally decoded data.
+	switch section {
+	case "experience":
+		if len(canonical.Experience) > 0 {
+			result.Experience = canonical.Experience
+		}
+	case "education":
+		if len(canonical.Education) > 0 {
+			result.Education = canonical.Education
 		}
 	}
 	return sourceURLs, apiErrors

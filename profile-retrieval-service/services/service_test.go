@@ -168,7 +168,10 @@ func TestMergeAllProfileItemsFromRSCPaginatesUntilEmpty(t *testing.T) {
 			defer server.Close()
 
 			service := NewProfileServiceWithConfig(ProfileServiceConfig{Client: server.Client(), RequestMinInterval: -1})
-			result := &ProfileResult{}
+			result := &ProfileResult{
+				Experience: []Experience{{Title: "Partial HTML role", Description: "On-site"}},
+				Education:  []Education{{School: "Partial HTML school"}},
+			}
 			sourceURLs, apiErrors := service.mergeAllProfileItemsFromRSC(
 				context.Background(), result, "profile", "member", tt.section, server.URL,
 			)
@@ -182,6 +185,16 @@ func TestMergeAllProfileItemsFromRSCPaginatesUntilEmpty(t *testing.T) {
 			if tt.resultSize(result) != 1 {
 				t.Fatalf("result = %#v", result)
 			}
+			switch tt.section {
+			case "experience":
+				if result.Experience[0].Title != "Engineer" || result.Experience[0].Description != "" {
+					t.Fatalf("experience was not replaced by canonical RSC data: %#v", result.Experience)
+				}
+			case "education":
+				if result.Education[0].School != "State University" {
+					t.Fatalf("education was not replaced by canonical RSC data: %#v", result.Education)
+				}
+			}
 			for _, start := range starts {
 				key := fmt.Sprintf("flagship_%s_rsc_%d", tt.section, start)
 				if sourceURLs[key] != server.URL {
@@ -189,5 +202,26 @@ func TestMergeAllProfileItemsFromRSCPaginatesUntilEmpty(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMergeAllProfileItemsFromRSCKeepsHTMLFallbackOnFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	service := NewProfileServiceWithConfig(ProfileServiceConfig{Client: server.Client(), RequestMinInterval: -1})
+	want := []Experience{{Title: "HTML fallback", Description: "Preserved"}}
+	result := &ProfileResult{Experience: append([]Experience(nil), want...)}
+	_, apiErrors := service.mergeAllProfileItemsFromRSC(
+		context.Background(), result, "profile", "member", "experience", server.URL,
+	)
+
+	if len(apiErrors) != 1 {
+		t.Fatalf("api errors = %#v", apiErrors)
+	}
+	if !reflect.DeepEqual(result.Experience, want) {
+		t.Fatalf("experience = %#v, want fallback %#v", result.Experience, want)
 	}
 }
