@@ -270,6 +270,62 @@ func TestProfileDataParserMergeMultipleRolesAtSameCompany(t *testing.T) {
 	}
 }
 
+func TestProfileDataParserUsesListItemsForGroupedRoles(t *testing.T) {
+	document := `
+		<html><body>
+			<h2>Experience</h2>
+			<ul><li>
+				<div>Cognizant</div>
+				<div>3 yrs 3 mos</div>
+				<ul>
+					<li><p>Associate</p><p>Full-time</p><p>Jan 2026 - Present · 8 mos</p><p>Hyderabad, Telangana, India</p></li>
+					<li><p>Performance Test Engineer</p><p>Jun 2023 - Present · 3 yrs 3 mos</p><p>Led performance testing initiatives.</p></li>
+					<li><p>Program Analyst</p><p>Full-time</p><p>Jul 2024 - Dec 2025 · 1 yr 6 mos</p><p>Hyderabad, Telangana, India · Hybrid</p></li>
+					<li><p>Programmer Analyst Trainee</p><p>Full-time</p><p>Jun 2023 - Jun 2024 · 1 yr 1 mo</p><p>Hyderabad, Telangana, India · Hybrid</p><p>Skills:</p><p>HP Performance Center, LoadRunner, +1 skill</p></li>
+				</ul>
+			</li></ul>
+			<div>Ad Options</div>
+		</body></html>`
+
+	result := &ProfileResult{}
+	NewProfileDataParser().Merge(result, document, "sureshramana219")
+
+	expected := []Experience{
+		{
+			Title:          "Associate",
+			Company:        "Cognizant",
+			EmploymentType: "Full-time",
+			DateRange:      "Jan 2026 - Present · 8 mos",
+			Location:       "Hyderabad, Telangana, India",
+		},
+		{
+			Title:          "Performance Test Engineer",
+			Company:        "Cognizant",
+			EmploymentType: "Full-time",
+			DateRange:      "Jun 2023 - Present · 3 yrs 3 mos",
+			Description:    "Led performance testing initiatives.",
+		},
+		{
+			Title:          "Program Analyst",
+			Company:        "Cognizant",
+			EmploymentType: "Full-time",
+			DateRange:      "Jul 2024 - Dec 2025 · 1 yr 6 mos",
+			Location:       "Hyderabad, Telangana, India · Hybrid",
+		},
+		{
+			Title:          "Programmer Analyst Trainee",
+			Company:        "Cognizant",
+			EmploymentType: "Full-time",
+			DateRange:      "Jun 2023 - Jun 2024 · 1 yr 1 mo",
+			Location:       "Hyderabad, Telangana, India · Hybrid",
+			Skills:         []string{"HP Performance Center", "LoadRunner"},
+		},
+	}
+	if !reflect.DeepEqual(result.Experience, expected) {
+		t.Fatalf("experience = %#v, want %#v", result.Experience, expected)
+	}
+}
+
 func TestProfileDataParserMergeEducationAndSkills(t *testing.T) {
 	document := `
 		<html><body>

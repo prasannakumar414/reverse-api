@@ -9,6 +9,8 @@ import (
 
 type ProfileDataParser struct{}
 
+const experienceListItemBoundary = "__LINKEDIN_EXPERIENCE_ITEM_BOUNDARY__"
+
 func NewProfileDataParser() *ProfileDataParser {
 	return &ProfileDataParser{}
 }
@@ -20,6 +22,10 @@ func (p *ProfileDataParser) Merge(result *ProfileResult, document string, public
 
 	isRSC := isRSCDocument(document)
 	lines := htmlTextLines(document)
+	experienceLines := lines
+	if !isRSC {
+		experienceLines = htmlExperienceTextLines(document)
+	}
 	p.mergeProfile(result, document, lines, publicID)
 	if isRSC {
 		if about := aboutFromRSC(document); about != "" {
@@ -27,7 +33,7 @@ func (p *ProfileDataParser) Merge(result *ProfileResult, document string, public
 		}
 	}
 	p.mergeImages(result, document)
-	p.mergeExperience(result, lines)
+	p.mergeExperience(result, experienceLines)
 	p.mergeEducation(result, lines, isRSC)
 	p.mergeSkills(result, lines)
 	if isRSC {
@@ -116,6 +122,10 @@ func (p *ProfileDataParser) mergeExperience(result *ProfileResult, lines []strin
 }
 
 func experienceItemsFromLines(lines []string) []Experience {
+	if items := experienceItemsFromListBoundaries(lines); len(items) > 0 {
+		return items
+	}
+
 	var items []Experience
 	for i := 0; i < len(lines); {
 		switch {
@@ -131,6 +141,59 @@ func experienceItemsFromLines(lines []string) []Experience {
 			i = end
 		default:
 			i++
+		}
+	}
+	return items
+}
+
+func experienceItemsFromListBoundaries(lines []string) []Experience {
+	if indexLine(lines, experienceListItemBoundary) < 0 {
+		return nil
+	}
+
+	var segments [][]string
+	var segment []string
+	for _, line := range lines {
+		if line == experienceListItemBoundary {
+			if len(segment) > 0 {
+				segments = append(segments, segment)
+				segment = nil
+			}
+			continue
+		}
+		segment = append(segment, line)
+	}
+	if len(segment) > 0 {
+		segments = append(segments, segment)
+	}
+
+	var items []Experience
+	groupCompany := ""
+	groupEmploymentType := ""
+	for _, lines := range segments {
+		switch {
+		case isGroupedExperienceHeader(lines, 0):
+			groupCompany = strings.TrimSpace(lines[0])
+			if looksLikeEmploymentSummary(lines[1]) {
+				groupEmploymentType = splitClean(lines[1], "·")[0]
+			} else {
+				groupEmploymentType = ""
+			}
+			if item, employmentType, ok := groupedExperienceItemFromLines(lines, 2, groupCompany, groupEmploymentType); ok {
+				groupEmploymentType = employmentType
+				items = append(items, item)
+			}
+		case groupCompany != "" && isGroupedRoleHeader(lines, 0):
+			if item, employmentType, ok := groupedExperienceItemFromLines(lines, 0, groupCompany, groupEmploymentType); ok {
+				groupEmploymentType = employmentType
+				items = append(items, item)
+			}
+		case isStandaloneExperienceHeader(lines, 0):
+			groupCompany = ""
+			groupEmploymentType = ""
+			if item, ok := experienceItemFromLines(lines); ok {
+				items = append(items, item)
+			}
 		}
 	}
 	return items
@@ -153,11 +216,10 @@ func isStandaloneExperienceHeader(lines []string, start int) bool {
 }
 
 func isGroupedExperienceHeader(lines []string, start int) bool {
-	return start >= 0 && start+3 < len(lines) &&
+	return start >= 0 && start+2 < len(lines) &&
 		looksLikeExperienceIdentity(lines[start]) &&
-		looksLikeEmploymentSummary(lines[start+1]) &&
-		looksLikeExperienceIdentity(lines[start+2]) &&
-		looksLikeDateRange(lines[start+3])
+		(looksLikeEmploymentSummary(lines[start+1]) || looksLikeDurationSummary(lines[start+1])) &&
+		isGroupedRoleHeader(lines, start+2)
 }
 
 func groupedExperienceItemsFromLines(lines []string) []Experience {
@@ -166,34 +228,62 @@ func groupedExperienceItemsFromLines(lines []string) []Experience {
 	}
 
 	company := strings.TrimSpace(lines[0])
-	employmentParts := splitClean(lines[1], "·")
-	employmentType := employmentParts[0]
+	employmentType := ""
+	if looksLikeEmploymentSummary(lines[1]) {
+		employmentType = splitClean(lines[1], "·")[0]
+	}
 	roleLines := lines[2:]
 	var items []Experience
 	for i := 0; i+1 < len(roleLines); {
-		if !looksLikeExperienceIdentity(roleLines[i]) || !looksLikeDateRange(roleLines[i+1]) {
+		if !isGroupedRoleHeader(roleLines, i) {
 			i++
 			continue
 		}
 
 		end := len(roleLines)
 		for j := i + 2; j+1 < len(roleLines); j++ {
-			if looksLikeExperienceIdentity(roleLines[j]) && looksLikeDateRange(roleLines[j+1]) {
+			if isGroupedRoleHeader(roleLines, j) {
 				end = j
 				break
 			}
 		}
-		item := Experience{
-			Title:          strings.TrimSpace(roleLines[i]),
-			Company:        company,
-			EmploymentType: employmentType,
-			DateRange:      strings.TrimSpace(roleLines[i+1]),
+		if item, roleEmploymentType, ok := groupedExperienceItemFromLines(roleLines[:end], i, company, employmentType); ok {
+			employmentType = roleEmploymentType
+			items = append(items, item)
 		}
-		mergeExperienceDetails(&item, roleLines[i+2:end])
-		items = append(items, item)
 		i = end
 	}
 	return items
+}
+
+func groupedExperienceItemFromLines(lines []string, start int, company, employmentType string) (Experience, string, bool) {
+	if !isGroupedRoleHeader(lines, start) {
+		return Experience{}, employmentType, false
+	}
+
+	dateIndex := start + 1
+	if isEmploymentType(lines[dateIndex]) {
+		employmentType = strings.TrimSpace(lines[dateIndex])
+		dateIndex++
+	}
+	item := Experience{
+		Title:          strings.TrimSpace(lines[start]),
+		Company:        company,
+		EmploymentType: employmentType,
+		DateRange:      strings.TrimSpace(lines[dateIndex]),
+	}
+	mergeExperienceDetails(&item, lines[dateIndex+1:])
+	return item, employmentType, true
+}
+
+func isGroupedRoleHeader(lines []string, start int) bool {
+	if start < 0 || start+1 >= len(lines) || !looksLikeExperienceIdentity(lines[start]) {
+		return false
+	}
+	if looksLikeDateRange(lines[start+1]) {
+		return true
+	}
+	return start+2 < len(lines) && isEmploymentType(lines[start+1]) && looksLikeDateRange(lines[start+2])
 }
 
 func experienceItemFromLines(lines []string) (Experience, bool) {
@@ -224,7 +314,7 @@ func mergeExperienceDetails(item *Experience, lines []string) {
 			item.Location = line
 		case lower == "skills:":
 			continue
-		case strings.Contains(lower, " skills"):
+		case strings.Contains(lower, " skill"):
 			item.Skills = skillsFromSummaryLine(line)
 		default:
 			descriptions = append(descriptions, line)
@@ -236,7 +326,7 @@ func mergeExperienceDetails(item *Experience, lines []string) {
 func looksLikeExperienceIdentity(line string) bool {
 	line = strings.TrimSpace(line)
 	lower := strings.ToLower(line)
-	if line == "" || looksLikeDateRange(line) || looksLikeLocation(line) || looksLikeEmploymentSummary(line) || isChromeLine(line) || looksLikeRecommendationLine(line) {
+	if line == "" || looksLikeDateRange(line) || looksLikeLocation(line) || looksLikeEmploymentSummary(line) || isEmploymentType(line) || looksLikeDurationSummary(line) || isChromeLine(line) || looksLikeRecommendationLine(line) {
 		return false
 	}
 	if strings.Contains(lower, " skills") {
@@ -261,6 +351,23 @@ func looksLikeEmploymentSummary(line string) bool {
 	default:
 		return false
 	}
+}
+
+func isEmploymentType(line string) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "full-time", "part-time", "self-employed", "freelance", "contract", "internship", "apprenticeship", "seasonal", "temporary":
+		return true
+	default:
+		return false
+	}
+}
+
+func looksLikeDurationSummary(line string) bool {
+	line = strings.ToLower(strings.TrimSpace(line))
+	if looksLikeDateRange(line) || strings.Contains(line, "·") {
+		return false
+	}
+	return regexp.MustCompile(`^\d+\s+(?:yrs?|mos?)(?:\s+\d+\s+mos?)?$`).MatchString(line)
 }
 
 func (p *ProfileDataParser) mergeEducation(result *ProfileResult, lines []string, allowUnsectioned bool) {
@@ -505,13 +612,26 @@ func isLanguageProficiency(line string) bool {
 }
 
 func htmlTextLines(document string) []string {
+	return htmlTextLinesWithListBoundaries(document, false)
+}
+
+func htmlExperienceTextLines(document string) []string {
+	return htmlTextLinesWithListBoundaries(document, true)
+}
+
+func htmlTextLinesWithListBoundaries(document string, preserveListItemBoundaries bool) []string {
 	if isRSCDocument(document) {
 		return rscTextLines(document)
 	}
 
 	cleaned := regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`).ReplaceAllString(document, " ")
 	cleaned = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`).ReplaceAllString(cleaned, " ")
-	cleaned = regexp.MustCompile(`(?i)<br\s*/?>|</p>|</div>|</h[1-6]>|</li>|</section>|</span>`).ReplaceAllString(cleaned, "\n")
+	if preserveListItemBoundaries {
+		cleaned = regexp.MustCompile(`(?i)</li>`).ReplaceAllString(cleaned, "\n"+experienceListItemBoundary+"\n")
+		cleaned = regexp.MustCompile(`(?i)<br\s*/?>|</p>|</div>|</h[1-6]>|</section>|</span>`).ReplaceAllString(cleaned, "\n")
+	} else {
+		cleaned = regexp.MustCompile(`(?i)<br\s*/?>|</p>|</div>|</h[1-6]>|</li>|</section>|</span>`).ReplaceAllString(cleaned, "\n")
+	}
 	cleaned = regexp.MustCompile(`(?s)<[^>]+>`).ReplaceAllString(cleaned, "\n")
 	cleaned = html.UnescapeString(cleaned)
 	cleaned = strings.ReplaceAll(cleaned, "\u00a0", " ")
