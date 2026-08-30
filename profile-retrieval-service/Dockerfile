@@ -4,10 +4,10 @@ FROM golang:1.26.4-alpine AS build
 
 WORKDIR /src
 
-COPY go.mod ./
+COPY profile-retrieval-service/go.mod ./
 RUN go mod download
 
-COPY . .
+COPY profile-retrieval-service/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w" \
